@@ -23,7 +23,7 @@
   ```bash
   git add .
   git commit -m "feat: C3 블록 구현 및 검증 완료"
-  git push
+  git push -u origin main 
   ```
 
 ### 3. 단계별 검증
