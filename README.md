@@ -7,9 +7,10 @@ PyTorch YOLOv5n 모델을 **순수 C 언어**로 포팅한 프로젝트입니다
 
 ✅ **전체 파이프라인 구현 완료**
 - Layer 0~23: 특징 추출 파이프라인 (모든 레이어 Python과 동일, diff < 1e-4)
-- Layer 24: Detect Head (cv2, cv3 브랜치 구현 완료)
-- Decode: DFL 기반 디코딩 구현 완료
-- **.bin 파일 지원 완료**: 모든 테스트가 .bin 파일 사용 (헤더 파일 불필요)
+- Layer 24: Detect Head (cv2, cv3 브랜치 구현 완료, 검증 통과)
+- Decode: DFL 기반 디코딩 구현 완료 (검증 통과)
+- **NMS**: Non-Maximum Suppression 구현 완료 (Python 결과와 일치, 검증 통과)
+- **.bin 파일 지원 완료**: 모든 테스트가 .bin 파일 사용 (헤더 파일 제거됨)
   - `weights.bin`: 가중치 바이너리 (10MB)
   - `preprocessed_image.bin`: 전처리된 이미지 바이너리 (4.7MB)
   - 개발/테스트 및 임베디드 환경 모두 .bin 파일 사용
@@ -26,8 +27,8 @@ yolov5n/
 │   └── input/
 │       └── preprocessed_image.bin  # 전처리된 이미지 바이너리 (4.7MB, 모든 환경에서 사용)
 ├── tools/               # Python 유틸리티
-│   ├── export_weights_to_bin.py      # .pt → weights.bin 변환 (권장)
-│   ├── preprocess_image_to_bin.py    # 이미지 → .bin 변환 (권장)
+│   ├── export_weights_to_bin.py      # .pt → weights.bin 변환
+│   ├── preprocess_image_to_bin.py    # 이미지 → .bin 변환
 │   ├── gen_*_test_vectors.py         # 테스트 벡터 생성기
 │   └── ...
 ├── csrc/                # C 소스 코드
@@ -56,6 +57,7 @@ yolov5n/
 - **SPPF**: Spatial Pyramid Pooling Fast
 - **Detect**: Detect Head (cv2: bbox prediction, cv3: class prediction)
 - **Decode**: DFL 기반 디코딩 (bbox + confidence + class)
+- **NMS**: Non-Maximum Suppression (중복 detection 제거)
 
 ## 빠른 시작
 
@@ -144,6 +146,62 @@ Layer 23 diff = 0 OK
 All layers OK
 ```
 
+#### Detect Head 테스트
+```bash
+# Detect 테스트 벡터 생성
+source .venv/bin/activate
+python tools/gen_detect_test_vectors.py \
+    --pt assets/yolov5n.pt \
+    --img data/image/zidane.jpg \
+    --size 32 \
+    --out tests/test_vectors_detect.h
+
+# Detect 테스트 실행
+gcc -o tests/test_detect tests/test_detect.c csrc/blocks/detect.c \
+    csrc/blocks/conv.c csrc/operations/conv2d.c csrc/operations/bn_silu.c \
+    csrc/utils/weights_loader.c -I. -Icsrc -Iassets -Itests -lm -std=c99
+./tests/test_detect
+```
+
+#### Decode 테스트
+```bash
+# Decode 테스트 벡터 생성
+source .venv/bin/activate
+python tools/gen_decode_test_vectors.py \
+    --pt assets/yolov5n.pt \
+    --size 32 \
+    --out tests/test_vectors_decode.h \
+    --conf-threshold 0.01
+
+# Decode 테스트 실행
+gcc -o tests/test_decode tests/test_decode.c csrc/blocks/decode.c \
+    -I. -Icsrc -Iassets -Itests -lm -std=c99
+./tests/test_decode
+```
+
+#### NMS 테스트
+```bash
+# NMS 테스트 벡터 생성
+source .venv/bin/activate
+python tools/gen_nms_full_test_vectors.py \
+    --pt assets/yolov5n.pt \
+    --img data/image/zidane.jpg \
+    --out tests/test_vectors_nms_full.h \
+    --conf 0.25 --iou 0.45
+
+# NMS 테스트 실행
+gcc -o tests/test_nms_full tests/test_nms_full.c csrc/blocks/nms.c \
+    -I. -Icsrc -Iassets -Itests -lm -std=c99
+./tests/test_nms_full
+```
+
+**예상 출력:**
+```
+✅ All detections matched (tolerance=0.01)
+Python: 4 detections
+C NMS:  4 detections
+```
+
 ## 상세 가이드
 
 ### .bin 파일 형식
@@ -165,7 +223,11 @@ YOLOv5n은 다음과 같은 레이어 구조를 가집니다:
   - Upsample, Concat, C3 블록들
 - **Layer 18~23**: Head (Detection 준비)
   - Conv, Concat, C3 블록들
-- **Layer 24**: Detect (미구현)
+- **Layer 24**: Detect Head (구현 완료)
+  - cv2: bbox prediction (64채널)
+  - cv3: class prediction (80채널)
+- **Decode**: DFL 기반 디코딩 (구현 완료)
+- **NMS**: Non-Maximum Suppression (구현 완료)
 
 ### Concat 참조 관계
 
@@ -256,7 +318,7 @@ image_free(&img);
 
 ### .bin 파일의 장점
 
-1. **컴파일 시간 단축**: 헤더 파일(36MB+20MB)을 컴파일에 포함하지 않음
+1. **컴파일 시간 단축**: 대용량 헤더 파일을 컴파일에 포함하지 않음
 2. **메모리 효율**: 런타임에 필요한 데이터만 메모리에 로드
 3. **파일 시스템 불필요**: 임베디드 환경에서 파일 시스템 오버헤드 없음
 4. **빠른 접근**: 메모리 직접 접근으로 최고 속도
@@ -273,9 +335,9 @@ image_free(&img);
 - [x] Layer 0~23 구현 및 검증
 - [x] Layer 24 (Detect Head) 구현 및 검증
 - [x] Decode 블록 구현 및 검증
+- [x] NMS (Non-Maximum Suppression) 구현 및 검증
 - [x] .bin 파일 지원 완료 (모든 테스트가 .bin 파일 사용)
 - [x] weights_loader, image_loader 유틸리티 구현
-- [ ] NMS (Non-Maximum Suppression) 구현
 - [ ] 전체 파이프라인 통합 테스트 (main.c)
 - [ ] MicroBlaze V 하드웨어 검증
 

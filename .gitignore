@@ -18,4 +18,6 @@ assets/weights*.h  # 헤더로 뽑은 가중치(엄청 큼)
 obj/               # 컴파일된 오브젝트 파일
 *.elf              # MicroBlaze 실행 파일
 *.bit              # FPGA 비트스트림 파일 (필요시 제외 가능)
-tests/test_conv0   # 로컬 테스트 실행파일
+tests/test_*       # 로컬 테스트 실행파일 (컴파일된 바이너리)
+!tests/test_*.c    # 소스 파일은 제외
+*.dSYM/            # 디버그 심볼 디렉토리
