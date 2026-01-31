@@ -57,6 +57,11 @@
 #define DETECTIONS_OUT_BASE (IMAGE_AND_FEATURE_BASE + IMAGE_AND_FEATURE_SIZE - 4096u)
 #endif
 
+/** CPU 클럭 (MHz). mcycle → ms 변환: cycles / (CPU_MHZ * 1000) */
+#ifndef CPU_MHZ
+#define CPU_MHZ 100
+#endif
+
 #endif /* BARE_METAL */
 
 #endif /* PLATFORM_CONFIG_H */

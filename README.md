@@ -73,10 +73,13 @@ YOLOv5n_in_C/
 │   ├── test_*.c                 # 각 블록별 테스트
 │   └── test_vectors_*.h         # 테스트 벡터
 │
+├── docs/                         # 문서 (상세 가이드)
+│   ├── DATA_CACHE_USAGE.md      # D-Cache 사용 방법·구간별 코드
+│   ├── VITIS_BUILD.md           # Vitis Bare-metal 빌드·메모리 맵·링커 스크립트
+│   ├── TESTING.md               # 테스트 방법
+│   └── CONV2D_OPTIMIZATION.md   # conv2d 최적화 상세 (개념·코드)
 ├── CHANGELOG.md                  # 변경 이력
-├── VITIS_BUILD.md               # Vitis Bare-metal 빌드·메모리 맵·링커 스크립트
-├── csrc/operations/CONV2D_OPTIMIZATION.md  # conv2d 최적화 상세 (개념·코드)
-└── TESTING.md                   # 테스트 방법
+└── README.md                     # 본 문서
 ```
 
 ## 빌드 및 실행
@@ -118,7 +121,7 @@ Windows: `main.exe`
 - 출력: DDR `DETECTIONS_OUT_BASE` 버퍼 + UART Hex 덤프
 - CPU 클럭: `platform_config.h` 의 `CPU_MHZ` (기본 100MHz). **각 레이어/연산을 지날 때마다** `  L0 12345 ms (0x...)` 형태(정수 ms)로 즉시 출력되며, 마지막에 `[mcycle]`·`[time @ 100MHz]` 요약이 출력됨. xil_printf는 `%f` 미지원이라 보드에서는 정수 ms만 사용.
 
-상세 메모리 맵, 캐시, 링커 스크립트, UART 프로토콜은 **[VITIS_BUILD.md](VITIS_BUILD.md)** 참고.
+상세 메모리 맵, 캐시, 링커 스크립트, UART 프로토콜은 **[docs/VITIS_BUILD.md](docs/VITIS_BUILD.md)** 참고. **D-Cache 사용 방법·구간별 코드**는 **[docs/DATA_CACHE_USAGE.md](docs/DATA_CACHE_USAGE.md)** 참고.
 
 ## 단계별 시간 측정
 
@@ -186,7 +189,7 @@ Conv2D는 D-Cache·메모리 대역폭을 줄이기 위해 다음을 적용했�
 - **패딩 분리**: 타일 전체가 안전 영역인지 한 번만 체크 → 64회 분기를 1회로 축소.
 - **누적 버퍼**: `acc_ptr = &acc_buf[dh][dw][0]`, `acc_ptr[b] += contrib` 로 다차원 인덱싱 오버헤드 감소.
 
-상세 개념·코드 설명은 **[csrc/operations/CONV2D_OPTIMIZATION.md](csrc/operations/CONV2D_OPTIMIZATION.md)** 참고.
+상세 개념·코드 설명은 **[docs/CONV2D_OPTIMIZATION.md](docs/CONV2D_OPTIMIZATION.md)** 참고.
 
 ## 기술 요약
 
@@ -197,7 +200,7 @@ Conv2D는 D-Cache·메모리 대역폭을 줄이기 위해 다음을 적용했�
 
 ## 테스트
 
-블록별 단위 테스트 및 벡터 생성 방법은 **[TESTING.md](TESTING.md)** 참고.
+블록별 단위 테스트 및 벡터 생성 방법은 **[docs/TESTING.md](docs/TESTING.md)** 참고.
 
 ## 라이선스 / 참고
 
