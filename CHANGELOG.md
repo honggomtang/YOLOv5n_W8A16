@@ -7,7 +7,7 @@ Arty A7-35T + MicroBlaze V (RISC-V) + Bare-metal (Vitis) 환경에서 YOLOv5n �
 
 ## 최근 정리 (GitHub 업로드 전)
 
-- **conv2d 추가 최적화 (제미나이 제안 반영):** (1) **입력 재사용:** 루프 순서를 oh0→ow0→oc_block→ic로 변경. 입력 타일 하나를 캐시에 올려두고 OC_BLOCK(기본 32) 출력 채널에 대해 연산 후 다음 ic로. (2) **Strength reduction:** 가장 안쪽 루프(kw)에서 인덱스 곱셈 제거, `x_row++`/`w_row++` 포인터 증감만 사용. (3) **패딩 분리:** 패딩이 필요 없는 안전 영역(safe_oh_min/max, safe_ow_min/max)과 경계를 분리; 안전 영역은 빠른 경로(분기 없음), 경계만 if 경로. (4) 누적 버퍼는 스택 대신 BSS 정적 배열 `conv2d_acc_buf[TILE_H][TILE_W][OC_BLOCK]` 사용 (bare-metal 스택 제한).
+- **conv2d 추가 최적화:** (1) **입력 재사용:** 루프 순서를 oh0→ow0→oc_block→ic로 변경. 입력 타일 하나를 캐시에 올려두고 OC_BLOCK(기본 32) 출력 채널에 대해 연산 후 다음 ic로. (2) **Strength reduction:** 가장 안쪽 루프(kw)에서 인덱스 곱셈 제거, `x_row++`/`w_row++` 포인터 증감만 사용. (3) **패딩 분리:** 패딩이 필요 없는 안전 영역(safe_oh_min/max, safe_ow_min/max)과 경계를 분리; 안전 영역은 빠른 경로(분기 없음), 경계만 if 경로. (4) 누적 버퍼는 스택 대신 BSS 정적 배열 `conv2d_acc_buf[TILE_H][TILE_W][OC_BLOCK]` 사용 (bare-metal 스택 제한).
 - **성능 최적화:** (1) D-Cache는 이미 `main.c`에서 `Xil_DCacheEnable()` 적용됨. (2) **타일링:** `csrc/operations/conv2d.c`에 출력 공간(oh, ow) 8×8 타일링 추가 — 캐시(16KB)에 맞춰 데이터 재사용 증가. `-DCONV2D_TILE_H=4 -DCONV2D_TILE_W=4`로 타일 크기 변경 가능. (3) **스택 BRAM 복귀:** `docs/VITIS_BUILD.md` §2에 벡터 테이블(.vectors)을 BRAM 최앞(0x0), 스택을 0x40 이후에 배치하는 lscript.ld 예시 추가 — 스택을 BRAM에 두어도 벡터 테이블 침범 방지.
 - **주석/로그 정리:** 디버그용 DBG 로그, 레이어별 L0~L23 dump, p3 dump, largest_free, l0@ 주소 로그 제거. 과한 설명 주석 축약.
 - **유지:** 사용자용 로그(Loading..., Running inference..., Decoded, After NMS, Summary, Done), 캐시 Flush/Invalidate 호출, C3 풀 실패 시 단일 메시지.
