@@ -36,10 +36,11 @@
 #endif
 
 #define W(name) weights_get_tensor_data(&weights, name)
+#define W_CONV(name, scale_ptr, is8_ptr) weights_get_tensor_for_conv(&weights, (name), (scale_ptr), (is8_ptr))
 
 #define INPUT_SIZE 640
 #define NUM_CLASSES 80
-#define CONF_THRESHOLD 0.25f
+#define CONF_THRESHOLD 0.20f
 #define IOU_THRESHOLD 0.45f
 #define MAX_DETECTIONS 300
 
@@ -103,12 +104,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     img.data = (float*)((uintptr_t)IMAGE_DDR_BASE + (uintptr_t)IMAGE_HEADER_SIZE);
+#ifdef USE_WEIGHTS_W8
+    YOLO_LOG("Loading weights (W8) from DDR 0x%08X...\n", (unsigned int)WEIGHTS_W8_DDR_BASE);
+    if (weights_init_from_memory_w8((uintptr_t)WEIGHTS_W8_DDR_BASE, (size_t)WEIGHTS_W8_DDR_SIZE, &weights) != 0) {
+        YOLO_LOG("ERROR: Failed to load weights (W8) from DDR\n");
+        image_free(&img);
+        return 1;
+    }
+#else
     YOLO_LOG("Loading weights from DDR 0x%08X...\n", (unsigned int)WEIGHTS_DDR_BASE);
     if (weights_init_from_memory((uintptr_t)WEIGHTS_DDR_BASE, (size_t)WEIGHTS_DDR_SIZE, &weights) != 0) {
         YOLO_LOG("ERROR: Failed to load weights from DDR\n");
         image_free(&img);
         return 1;
     }
+#endif
     {
         const float* bias24 = (const float*)W("model.24.m.0.bias");
         if (bias24) {
@@ -123,11 +133,19 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Failed to load image\n");
         return 1;
     }
+#ifdef USE_WEIGHTS_W8
+    if (weights_load_from_file_w8("assets/weights_w8.bin", &weights) != 0) {
+        fprintf(stderr, "Failed to load weights (W8)\n");
+        image_free(&img);
+        return 1;
+    }
+#else
     if (weights_load_from_file("assets/weights.bin", &weights) != 0) {
         fprintf(stderr, "Failed to load weights\n");
         image_free(&img);
         return 1;
     }
+#endif
 #endif
     YOLO_LOG("Image: %dx%d\n", img.w, img.h);
     YOLO_LOG("Weights: %d tensors\n\n", weights.num_tensors);
@@ -206,9 +224,9 @@ int main(int argc, char* argv[]) {
     // Layer 0: Conv 6x6 s2
     POOL_ALLOC(l0, sz_l0);
     t_layer = timer_read64();
-    conv_block_nchw_f32(img.data, n, 3, 640, 640,
-        W("model.0.conv.weight"), 16, 6, 6, 2, 2, 2, 2,
-        W("model.0.conv.bias"), l0, 320, 320);
+    { float _sw; int _iw; void* _pw = W_CONV("model.0.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(img.data, n, 3, 640, 640, _pw, _sw, _iw, 16, 6, 6, 2, 2, 2, 2,
+          W("model.0.conv.bias"), l0, 320, 320); }
     layer_cycles[0] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(0, layer_cycles[0], &l0[0]);
     yolo_timing_print_layer_ops(0);
@@ -220,9 +238,9 @@ int main(int argc, char* argv[]) {
     // Layer 1: Conv 3x3 s2
     POOL_ALLOC(l1, sz_l1);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l0, n, 16, 320, 320,
-        W("model.1.conv.weight"), 32, 3, 3, 2, 2, 1, 1,
-        W("model.1.conv.bias"), l1, 160, 160);
+    { float _sw; int _iw; void* _pw = W_CONV("model.1.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l0, n, 16, 320, 320, _pw, _sw, _iw, 32, 3, 3, 2, 2, 1, 1,
+          W("model.1.conv.bias"), l1, 160, 160); }
     layer_cycles[1] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(1, layer_cycles[1], &l1[0]);
     yolo_timing_print_layer_ops(1);
@@ -237,17 +255,19 @@ int main(int argc, char* argv[]) {
     { size_t largest = feature_pool_get_largest_free(); YOLO_LOG("  before L2 pool largest_free=%u\n", (unsigned)largest); }
 #endif
     POOL_ALLOC(l2, sz_l2);
-    const float* l2_cv1w[] = {W("model.2.m.0.cv1.conv.weight")};
+    float l2_cv1_scale[1]; int l2_cv1_is_int8[1]; const void* l2_cv1w[1]; l2_cv1w[0] = W_CONV("model.2.m.0.cv1.conv.weight", &l2_cv1_scale[0], &l2_cv1_is_int8[0]);
+    float l2_cv2_scale[1]; int l2_cv2_is_int8[1]; const void* l2_cv2w[1]; l2_cv2w[0] = W_CONV("model.2.m.0.cv2.conv.weight", &l2_cv2_scale[0], &l2_cv2_is_int8[0]);
     const float* l2_cv1b[] = {W("model.2.m.0.cv1.conv.bias")};
-    const float* l2_cv2w[] = {W("model.2.m.0.cv2.conv.weight")};
     const float* l2_cv2b[] = {W("model.2.m.0.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l1, n, 32, 160, 160,
-        W("model.2.cv1.conv.weight"), 16, W("model.2.cv1.conv.bias"),
-        W("model.2.cv2.conv.weight"), 16, W("model.2.cv2.conv.bias"),
-        W("model.2.cv3.conv.weight"), 32, W("model.2.cv3.conv.bias"),
-        1, l2_cv1w, l2_cv1b, l2_cv2w, l2_cv2b, 1, l2);  // shortcut=1
-    layer_cycles[2] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.2.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.2.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.2.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l1, n, 32, 160, 160,
+          w1, s1, i1, 16, W("model.2.cv1.conv.bias"),
+          w2, s2, i2, 16, W("model.2.cv2.conv.bias"),
+          w3, s3, i3, 32, W("model.2.cv3.conv.bias"),
+          1, l2_cv1w, l2_cv1_scale, l2_cv1_is_int8, l2_cv1b, l2_cv2w, l2_cv2_scale, l2_cv2_is_int8, l2_cv2b, 1, l2);
+      layer_cycles[2] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(2, layer_cycles[2], &l2[0]);
     yolo_timing_print_layer_ops(2);
 #ifdef BARE_METAL
@@ -259,9 +279,9 @@ int main(int argc, char* argv[]) {
     // Layer 3: Conv 3x3 s2
     POOL_ALLOC(l3, sz_l3);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l2, n, 32, 160, 160,
-        W("model.3.conv.weight"), 64, 3, 3, 2, 2, 1, 1,
-        W("model.3.conv.bias"), l3, 80, 80);
+    { float _sw; int _iw; void* _pw = W_CONV("model.3.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l2, n, 32, 160, 160, _pw, _sw, _iw, 64, 3, 3, 2, 2, 1, 1,
+          W("model.3.conv.bias"), l3, 80, 80); }
     layer_cycles[3] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(3, layer_cycles[3], &l3[0]);
     yolo_timing_print_layer_ops(3);
@@ -273,17 +293,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(4);
     // Layer 4: C3 (n=2)
     POOL_ALLOC(l4, sz_l4);
-    const float* l4_cv1w[] = {W("model.4.m.0.cv1.conv.weight"), W("model.4.m.1.cv1.conv.weight")};
+    float l4_cv1_scale[2]; int l4_cv1_is_int8[2]; const void* l4_cv1w[2]; l4_cv1w[0] = W_CONV("model.4.m.0.cv1.conv.weight", &l4_cv1_scale[0], &l4_cv1_is_int8[0]); l4_cv1w[1] = W_CONV("model.4.m.1.cv1.conv.weight", &l4_cv1_scale[1], &l4_cv1_is_int8[1]);
+    float l4_cv2_scale[2]; int l4_cv2_is_int8[2]; const void* l4_cv2w[2]; l4_cv2w[0] = W_CONV("model.4.m.0.cv2.conv.weight", &l4_cv2_scale[0], &l4_cv2_is_int8[0]); l4_cv2w[1] = W_CONV("model.4.m.1.cv2.conv.weight", &l4_cv2_scale[1], &l4_cv2_is_int8[1]);
     const float* l4_cv1b[] = {W("model.4.m.0.cv1.conv.bias"), W("model.4.m.1.cv1.conv.bias")};
-    const float* l4_cv2w[] = {W("model.4.m.0.cv2.conv.weight"), W("model.4.m.1.cv2.conv.weight")};
     const float* l4_cv2b[] = {W("model.4.m.0.cv2.conv.bias"), W("model.4.m.1.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l3, n, 64, 80, 80,
-        W("model.4.cv1.conv.weight"), 32, W("model.4.cv1.conv.bias"),
-        W("model.4.cv2.conv.weight"), 32, W("model.4.cv2.conv.bias"),
-        W("model.4.cv3.conv.weight"), 64, W("model.4.cv3.conv.bias"),
-        2, l4_cv1w, l4_cv1b, l4_cv2w, l4_cv2b, 1, l4);  // shortcut=1
-    layer_cycles[4] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.4.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.4.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.4.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l3, n, 64, 80, 80, w1, s1, i1, 32, W("model.4.cv1.conv.bias"), w2, s2, i2, 32, W("model.4.cv2.conv.bias"), w3, s3, i3, 64, W("model.4.cv3.conv.bias"),
+          2, l4_cv1w, l4_cv1_scale, l4_cv1_is_int8, l4_cv1b, l4_cv2w, l4_cv2_scale, l4_cv2_is_int8, l4_cv2b, 1, l4);
+      layer_cycles[4] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(4, layer_cycles[4], &l4[0]);
     yolo_timing_print_layer_ops(4);
 #ifdef BARE_METAL
@@ -295,9 +314,9 @@ int main(int argc, char* argv[]) {
     // Layer 5: Conv 3x3 s2
     POOL_ALLOC(l5, sz_l5);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l4, n, 64, 80, 80,
-        W("model.5.conv.weight"), 128, 3, 3, 2, 2, 1, 1,
-        W("model.5.conv.bias"), l5, 40, 40);
+    { float _sw; int _iw; void* _pw = W_CONV("model.5.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l4, n, 64, 80, 80, _pw, _sw, _iw, 128, 3, 3, 2, 2, 1, 1,
+          W("model.5.conv.bias"), l5, 40, 40); }
     layer_cycles[5] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(5, layer_cycles[5], &l5[0]);
     yolo_timing_print_layer_ops(5);
@@ -308,17 +327,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(6);
     // Layer 6: C3 (n=3)
     POOL_ALLOC(l6, sz_l6);
-    const float* l6_cv1w[] = {W("model.6.m.0.cv1.conv.weight"), W("model.6.m.1.cv1.conv.weight"), W("model.6.m.2.cv1.conv.weight")};
+    float l6_cv1_scale[3]; int l6_cv1_is_int8[3]; const void* l6_cv1w[3]; l6_cv1w[0] = W_CONV("model.6.m.0.cv1.conv.weight", &l6_cv1_scale[0], &l6_cv1_is_int8[0]); l6_cv1w[1] = W_CONV("model.6.m.1.cv1.conv.weight", &l6_cv1_scale[1], &l6_cv1_is_int8[1]); l6_cv1w[2] = W_CONV("model.6.m.2.cv1.conv.weight", &l6_cv1_scale[2], &l6_cv1_is_int8[2]);
+    float l6_cv2_scale[3]; int l6_cv2_is_int8[3]; const void* l6_cv2w[3]; l6_cv2w[0] = W_CONV("model.6.m.0.cv2.conv.weight", &l6_cv2_scale[0], &l6_cv2_is_int8[0]); l6_cv2w[1] = W_CONV("model.6.m.1.cv2.conv.weight", &l6_cv2_scale[1], &l6_cv2_is_int8[1]); l6_cv2w[2] = W_CONV("model.6.m.2.cv2.conv.weight", &l6_cv2_scale[2], &l6_cv2_is_int8[2]);
     const float* l6_cv1b[] = {W("model.6.m.0.cv1.conv.bias"), W("model.6.m.1.cv1.conv.bias"), W("model.6.m.2.cv1.conv.bias")};
-    const float* l6_cv2w[] = {W("model.6.m.0.cv2.conv.weight"), W("model.6.m.1.cv2.conv.weight"), W("model.6.m.2.cv2.conv.weight")};
     const float* l6_cv2b[] = {W("model.6.m.0.cv2.conv.bias"), W("model.6.m.1.cv2.conv.bias"), W("model.6.m.2.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l5, n, 128, 40, 40,
-        W("model.6.cv1.conv.weight"), 64, W("model.6.cv1.conv.bias"),
-        W("model.6.cv2.conv.weight"), 64, W("model.6.cv2.conv.bias"),
-        W("model.6.cv3.conv.weight"), 128, W("model.6.cv3.conv.bias"),
-        3, l6_cv1w, l6_cv1b, l6_cv2w, l6_cv2b, 1, l6);  // shortcut=1
-    layer_cycles[6] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.6.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.6.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.6.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l5, n, 128, 40, 40, w1, s1, i1, 64, W("model.6.cv1.conv.bias"), w2, s2, i2, 64, W("model.6.cv2.conv.bias"), w3, s3, i3, 128, W("model.6.cv3.conv.bias"),
+          3, l6_cv1w, l6_cv1_scale, l6_cv1_is_int8, l6_cv1b, l6_cv2w, l6_cv2_scale, l6_cv2_is_int8, l6_cv2b, 1, l6);
+      layer_cycles[6] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(6, layer_cycles[6], &l6[0]);
     yolo_timing_print_layer_ops(6);
 #ifdef BARE_METAL
@@ -330,9 +348,9 @@ int main(int argc, char* argv[]) {
     // Layer 7: Conv 3x3 s2
     POOL_ALLOC(l7, sz_l7);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l6, n, 128, 40, 40,
-        W("model.7.conv.weight"), 256, 3, 3, 2, 2, 1, 1,
-        W("model.7.conv.bias"), l7, 20, 20);
+    { float _sw; int _iw; void* _pw = W_CONV("model.7.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l6, n, 128, 40, 40, _pw, _sw, _iw, 256, 3, 3, 2, 2, 1, 1,
+          W("model.7.conv.bias"), l7, 20, 20); }
     layer_cycles[7] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(7, layer_cycles[7], &l7[0]);
     yolo_timing_print_layer_ops(7);
@@ -343,17 +361,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(8);
     // Layer 8: C3 (n=1)
     POOL_ALLOC(l8, sz_l8);
-    const float* l8_cv1w[] = {W("model.8.m.0.cv1.conv.weight")};
+    float l8_cv1_scale[1]; int l8_cv1_is_int8[1]; const void* l8_cv1w[1]; l8_cv1w[0] = W_CONV("model.8.m.0.cv1.conv.weight", &l8_cv1_scale[0], &l8_cv1_is_int8[0]);
+    float l8_cv2_scale[1]; int l8_cv2_is_int8[1]; const void* l8_cv2w[1]; l8_cv2w[0] = W_CONV("model.8.m.0.cv2.conv.weight", &l8_cv2_scale[0], &l8_cv2_is_int8[0]);
     const float* l8_cv1b[] = {W("model.8.m.0.cv1.conv.bias")};
-    const float* l8_cv2w[] = {W("model.8.m.0.cv2.conv.weight")};
     const float* l8_cv2b[] = {W("model.8.m.0.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l7, n, 256, 20, 20,
-        W("model.8.cv1.conv.weight"), 128, W("model.8.cv1.conv.bias"),
-        W("model.8.cv2.conv.weight"), 128, W("model.8.cv2.conv.bias"),
-        W("model.8.cv3.conv.weight"), 256, W("model.8.cv3.conv.bias"),
-        1, l8_cv1w, l8_cv1b, l8_cv2w, l8_cv2b, 1, l8);  // shortcut=1
-    layer_cycles[8] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.8.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.8.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.8.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l7, n, 256, 20, 20, w1, s1, i1, 128, W("model.8.cv1.conv.bias"), w2, s2, i2, 128, W("model.8.cv2.conv.bias"), w3, s3, i3, 256, W("model.8.cv3.conv.bias"),
+          1, l8_cv1w, l8_cv1_scale, l8_cv1_is_int8, l8_cv1b, l8_cv2w, l8_cv2_scale, l8_cv2_is_int8, l8_cv2b, 1, l8);
+      layer_cycles[8] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(8, layer_cycles[8], &l8[0]);
     yolo_timing_print_layer_ops(8);
 #ifdef BARE_METAL
@@ -385,9 +402,9 @@ int main(int argc, char* argv[]) {
     // Layer 10: Conv 1x1
     POOL_ALLOC(l10, sz_l10);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l9, n, 256, 20, 20,
-        W("model.10.conv.weight"), 128, 1, 1, 1, 1, 0, 0,
-        W("model.10.conv.bias"), l10, 20, 20);
+    { float _sw; int _iw; void* _pw = W_CONV("model.10.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l9, n, 256, 20, 20, _pw, _sw, _iw, 128, 1, 1, 1, 1, 0, 0,
+          W("model.10.conv.bias"), l10, 20, 20); }
     layer_cycles[10] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(10, layer_cycles[10], &l10[0]);
     yolo_timing_print_layer_ops(10);
@@ -427,17 +444,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(13);
     // Layer 13: C3 (n=1)
     POOL_ALLOC(l13, sz_l13);
-    const float* l13_cv1w[] = {W("model.13.m.0.cv1.conv.weight")};
+    float l13_cv1_scale[1]; int l13_cv1_is_int8[1]; const void* l13_cv1w[1]; l13_cv1w[0] = W_CONV("model.13.m.0.cv1.conv.weight", &l13_cv1_scale[0], &l13_cv1_is_int8[0]);
+    float l13_cv2_scale[1]; int l13_cv2_is_int8[1]; const void* l13_cv2w[1]; l13_cv2w[0] = W_CONV("model.13.m.0.cv2.conv.weight", &l13_cv2_scale[0], &l13_cv2_is_int8[0]);
     const float* l13_cv1b[] = {W("model.13.m.0.cv1.conv.bias")};
-    const float* l13_cv2w[] = {W("model.13.m.0.cv2.conv.weight")};
     const float* l13_cv2b[] = {W("model.13.m.0.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l12, n, 256, 40, 40,
-        W("model.13.cv1.conv.weight"), 64, W("model.13.cv1.conv.bias"),
-        W("model.13.cv2.conv.weight"), 64, W("model.13.cv2.conv.bias"),
-        W("model.13.cv3.conv.weight"), 128, W("model.13.cv3.conv.bias"),
-        1, l13_cv1w, l13_cv1b, l13_cv2w, l13_cv2b, 0, l13);  // shortcut=0 (head)
-    layer_cycles[13] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.13.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.13.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.13.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l12, n, 256, 40, 40, w1, s1, i1, 64, W("model.13.cv1.conv.bias"), w2, s2, i2, 64, W("model.13.cv2.conv.bias"), w3, s3, i3, 128, W("model.13.cv3.conv.bias"),
+          1, l13_cv1w, l13_cv1_scale, l13_cv1_is_int8, l13_cv1b, l13_cv2w, l13_cv2_scale, l13_cv2_is_int8, l13_cv2b, 0, l13);
+      layer_cycles[13] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(13, layer_cycles[13], &l13[0]);
     yolo_timing_print_layer_ops(13);
 #ifdef BARE_METAL
@@ -449,9 +465,9 @@ int main(int argc, char* argv[]) {
     // Layer 14: Conv 1x1
     POOL_ALLOC(l14, sz_l14);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l13, n, 128, 40, 40,
-        W("model.14.conv.weight"), 64, 1, 1, 1, 1, 0, 0,
-        W("model.14.conv.bias"), l14, 40, 40);
+    { float _sw; int _iw; void* _pw = W_CONV("model.14.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l13, n, 128, 40, 40, _pw, _sw, _iw, 64, 1, 1, 1, 1, 0, 0,
+          W("model.14.conv.bias"), l14, 40, 40); }
     layer_cycles[14] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(14, layer_cycles[14], &l14[0]);
     yolo_timing_print_layer_ops(14);
@@ -491,17 +507,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(17);
     // Layer 17: C3 (n=1) -> P3
     POOL_ALLOC(l17, sz_l17);
-    const float* l17_cv1w[] = {W("model.17.m.0.cv1.conv.weight")};
+    float l17_cv1_scale[1]; int l17_cv1_is_int8[1]; const void* l17_cv1w[1]; l17_cv1w[0] = W_CONV("model.17.m.0.cv1.conv.weight", &l17_cv1_scale[0], &l17_cv1_is_int8[0]);
+    float l17_cv2_scale[1]; int l17_cv2_is_int8[1]; const void* l17_cv2w[1]; l17_cv2w[0] = W_CONV("model.17.m.0.cv2.conv.weight", &l17_cv2_scale[0], &l17_cv2_is_int8[0]);
     const float* l17_cv1b[] = {W("model.17.m.0.cv1.conv.bias")};
-    const float* l17_cv2w[] = {W("model.17.m.0.cv2.conv.weight")};
     const float* l17_cv2b[] = {W("model.17.m.0.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l16, n, 128, 80, 80,
-        W("model.17.cv1.conv.weight"), 32, W("model.17.cv1.conv.bias"),
-        W("model.17.cv2.conv.weight"), 32, W("model.17.cv2.conv.bias"),
-        W("model.17.cv3.conv.weight"), 64, W("model.17.cv3.conv.bias"),
-        1, l17_cv1w, l17_cv1b, l17_cv2w, l17_cv2b, 0, l17);  // shortcut=0 (head)
-    layer_cycles[17] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.17.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.17.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.17.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l16, n, 128, 80, 80, w1, s1, i1, 32, W("model.17.cv1.conv.bias"), w2, s2, i2, 32, W("model.17.cv2.conv.bias"), w3, s3, i3, 64, W("model.17.cv3.conv.bias"),
+          1, l17_cv1w, l17_cv1_scale, l17_cv1_is_int8, l17_cv1b, l17_cv2w, l17_cv2_scale, l17_cv2_is_int8, l17_cv2b, 0, l17);
+      layer_cycles[17] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(17, layer_cycles[17], &l17[0]);
     yolo_timing_print_layer_ops(17);
 #ifdef BARE_METAL
@@ -513,9 +528,9 @@ int main(int argc, char* argv[]) {
     // Layer 18: Conv 3x3 s2
     POOL_ALLOC(l18, sz_l18);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l17, n, 64, 80, 80,
-        W("model.18.conv.weight"), 64, 3, 3, 2, 2, 1, 1,
-        W("model.18.conv.bias"), l18, 40, 40);
+    { float _sw; int _iw; void* _pw = W_CONV("model.18.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l17, n, 64, 80, 80, _pw, _sw, _iw, 64, 3, 3, 2, 2, 1, 1,
+          W("model.18.conv.bias"), l18, 40, 40); }
     layer_cycles[18] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(18, layer_cycles[18], &l18[0]);
     yolo_timing_print_layer_ops(18);
@@ -542,17 +557,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(20);
     // Layer 20: C3 (n=1) -> P4
     POOL_ALLOC(l20, sz_l20);
-    const float* l20_cv1w[] = {W("model.20.m.0.cv1.conv.weight")};
+    float l20_cv1_scale[1]; int l20_cv1_is_int8[1]; const void* l20_cv1w[1]; l20_cv1w[0] = W_CONV("model.20.m.0.cv1.conv.weight", &l20_cv1_scale[0], &l20_cv1_is_int8[0]);
+    float l20_cv2_scale[1]; int l20_cv2_is_int8[1]; const void* l20_cv2w[1]; l20_cv2w[0] = W_CONV("model.20.m.0.cv2.conv.weight", &l20_cv2_scale[0], &l20_cv2_is_int8[0]);
     const float* l20_cv1b[] = {W("model.20.m.0.cv1.conv.bias")};
-    const float* l20_cv2w[] = {W("model.20.m.0.cv2.conv.weight")};
     const float* l20_cv2b[] = {W("model.20.m.0.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l19, n, 128, 40, 40,
-        W("model.20.cv1.conv.weight"), 64, W("model.20.cv1.conv.bias"),
-        W("model.20.cv2.conv.weight"), 64, W("model.20.cv2.conv.bias"),
-        W("model.20.cv3.conv.weight"), 128, W("model.20.cv3.conv.bias"),
-        1, l20_cv1w, l20_cv1b, l20_cv2w, l20_cv2b, 0, l20);  // shortcut=0 (head)
-    layer_cycles[20] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.20.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.20.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.20.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l19, n, 128, 40, 40, w1, s1, i1, 64, W("model.20.cv1.conv.bias"), w2, s2, i2, 64, W("model.20.cv2.conv.bias"), w3, s3, i3, 128, W("model.20.cv3.conv.bias"),
+          1, l20_cv1w, l20_cv1_scale, l20_cv1_is_int8, l20_cv1b, l20_cv2w, l20_cv2_scale, l20_cv2_is_int8, l20_cv2b, 0, l20);
+      layer_cycles[20] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(20, layer_cycles[20], &l20[0]);
     yolo_timing_print_layer_ops(20);
 #ifdef BARE_METAL
@@ -564,9 +578,9 @@ int main(int argc, char* argv[]) {
     // Layer 21: Conv 3x3 s2
     POOL_ALLOC(l21, sz_l21);
     t_layer = timer_read64();
-    conv_block_nchw_f32(l20, n, 128, 40, 40,
-        W("model.21.conv.weight"), 128, 3, 3, 2, 2, 1, 1,
-        W("model.21.conv.bias"), l21, 20, 20);
+    { float _sw; int _iw; void* _pw = W_CONV("model.21.conv.weight", &_sw, &_iw);
+      conv_block_nchw_f32(l20, n, 128, 40, 40, _pw, _sw, _iw, 128, 3, 3, 2, 2, 1, 1,
+          W("model.21.conv.bias"), l21, 20, 20); }
     layer_cycles[21] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(21, layer_cycles[21], &l21[0]);
     yolo_timing_print_layer_ops(21);
@@ -593,17 +607,16 @@ int main(int argc, char* argv[]) {
     yolo_timing_set_layer(23);
     // Layer 23: C3 (n=1) -> P5
     POOL_ALLOC(l23, sz_l23);
-    const float* l23_cv1w[] = {W("model.23.m.0.cv1.conv.weight")};
+    float l23_cv1_scale[1]; int l23_cv1_is_int8[1]; const void* l23_cv1w[1]; l23_cv1w[0] = W_CONV("model.23.m.0.cv1.conv.weight", &l23_cv1_scale[0], &l23_cv1_is_int8[0]);
+    float l23_cv2_scale[1]; int l23_cv2_is_int8[1]; const void* l23_cv2w[1]; l23_cv2w[0] = W_CONV("model.23.m.0.cv2.conv.weight", &l23_cv2_scale[0], &l23_cv2_is_int8[0]);
     const float* l23_cv1b[] = {W("model.23.m.0.cv1.conv.bias")};
-    const float* l23_cv2w[] = {W("model.23.m.0.cv2.conv.weight")};
     const float* l23_cv2b[] = {W("model.23.m.0.cv2.conv.bias")};
-    t_layer = timer_read64();
-    c3_nchw_f32(l22, n, 256, 20, 20,
-        W("model.23.cv1.conv.weight"), 128, W("model.23.cv1.conv.bias"),
-        W("model.23.cv2.conv.weight"), 128, W("model.23.cv2.conv.bias"),
-        W("model.23.cv3.conv.weight"), 256, W("model.23.cv3.conv.bias"),
-        1, l23_cv1w, l23_cv1b, l23_cv2w, l23_cv2b, 0, l23);  // shortcut=0 (head)
-    layer_cycles[23] = timer_delta64(t_layer, timer_read64());
+    { float s1, s2, s3; int i1, i2, i3; void* w1 = W_CONV("model.23.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.23.cv2.conv.weight", &s2, &i2); void* w3 = W_CONV("model.23.cv3.conv.weight", &s3, &i3);
+      t_layer = timer_read64();
+      c3_nchw_f32(l22, n, 256, 20, 20, w1, s1, i1, 128, W("model.23.cv1.conv.bias"), w2, s2, i2, 128, W("model.23.cv2.conv.bias"), w3, s3, i3, 256, W("model.23.cv3.conv.bias"),
+          1, l23_cv1w, l23_cv1_scale, l23_cv1_is_int8, l23_cv1b, l23_cv2w, l23_cv2_scale, l23_cv2_is_int8, l23_cv2b, 0, l23);
+      layer_cycles[23] = timer_delta64(t_layer, timer_read64());
+    }
     LAYER_LOG(23, layer_cycles[23], &l23[0]);
     yolo_timing_print_layer_ops(23);
 #ifdef BARE_METAL
@@ -629,14 +642,15 @@ int main(int argc, char* argv[]) {
     POOL_ALLOC(p5, sz_p5);
 #endif
 #undef POOL_ALLOC
-    detect_nchw_f32(
-        l17, 64, 80, 80,
-        l20, 128, 40, 40,
-        l23, 256, 20, 20,
-        W("model.24.m.0.weight"), W("model.24.m.0.bias"),
-        W("model.24.m.1.weight"), W("model.24.m.1.bias"),
-        W("model.24.m.2.weight"), W("model.24.m.2.bias"),
-        p3, p4, p5);
+    { float s0, s1, s2; int i0, i1, i2;
+      void* m0 = W_CONV("model.24.m.0.weight", &s0, &i0); void* m1 = W_CONV("model.24.m.1.weight", &s1, &i1); void* m2 = W_CONV("model.24.m.2.weight", &s2, &i2);
+      detect_nchw_f32(
+          l17, 64, 80, 80, l20, 128, 40, 40, l23, 256, 20, 20,
+          m0, s0, i0, W("model.24.m.0.bias"),
+          m1, s1, i1, W("model.24.m.1.bias"),
+          m2, s2, i2, W("model.24.m.2.bias"),
+          p3, p4, p5);
+    }
     YOLO_LOG("Detect\n");
     cycles_head = timer_delta64(t_stage_start, timer_read64());
 #ifdef BARE_METAL

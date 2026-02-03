@@ -9,6 +9,7 @@
 .DS_Store
 *.elf
 *.exe
+main
 main.exe
 build_log.txt
 gcc_build_log.txt

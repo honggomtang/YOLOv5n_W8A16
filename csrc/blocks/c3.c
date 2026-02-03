@@ -12,24 +12,33 @@
 
 static void conv1x1(
     const float* x, int32_t n, int32_t c_in, int32_t h, int32_t w,
-    const float* w_ptr, int32_t c_out, const float* bias,
+    const void* w_ptr, float w_scale, int w_is_int8, int32_t c_out, const float* bias,
     float* y)
 {
-    conv2d_nchw_f32(x, n, c_in, h, w,
-                    w_ptr, c_out, 1, 1,
-                    bias, 1, 1, 0, 0, 1,
-                    y, h, w);
+    if (w_is_int8) {
+        conv2d_nchw_f32_w8(x, n, c_in, h, w,
+                           (const int8_t*)w_ptr, w_scale, c_out, 1, 1,
+                           bias, 1, 1, 0, 0, 1,
+                           y, h, w);
+    } else {
+        conv2d_nchw_f32(x, n, c_in, h, w,
+                        (const float*)w_ptr, c_out, 1, 1,
+                        bias, 1, 1, 0, 0, 1,
+                        y, h, w);
+    }
     silu_nchw_f32(y, n, c_out, h, w, y);
 }
 
 void c3_nchw_f32(
     const float* x, int32_t n, int32_t c_in, int32_t h, int32_t w,
-    const float* cv1_w, int32_t cv1_c_out, const float* cv1_bias,
-    const float* cv2_w, int32_t cv2_c_out, const float* cv2_bias,
-    const float* cv3_w, int32_t cv3_c_out, const float* cv3_bias,
+    const void* cv1_w, float cv1_scale, int cv1_is_int8, int32_t cv1_c_out, const float* cv1_bias,
+    const void* cv2_w, float cv2_scale, int cv2_is_int8, int32_t cv2_c_out, const float* cv2_bias,
+    const void* cv3_w, float cv3_scale, int cv3_is_int8, int32_t cv3_c_out, const float* cv3_bias,
     int32_t n_bottleneck,
-    const float* const* bn_cv1_w, const float* const* bn_cv1_bias,
-    const float* const* bn_cv2_w, const float* const* bn_cv2_bias,
+    const void** bn_cv1_w, const float* bn_cv1_scale, const int* bn_cv1_is_int8,
+    const float* const* bn_cv1_bias,
+    const void** bn_cv2_w, const float* bn_cv2_scale, const int* bn_cv2_is_int8,
+    const float* const* bn_cv2_bias,
     int32_t shortcut,
     float* y)
 {
@@ -59,24 +68,22 @@ void c3_nchw_f32(
     }
     
     yolo_timing_begin("cv1");
-    conv1x1(x, n, c_in, h, w, cv1_w, cv1_c_out, cv1_bias, cv1_out);
+    conv1x1(x, n, c_in, h, w, cv1_w, cv1_scale, cv1_is_int8, cv1_c_out, cv1_bias, cv1_out);
     yolo_timing_end();
     yolo_timing_begin("cv2");
-    conv1x1(x, n, c_in, h, w, cv2_w, cv2_c_out, cv2_bias, cv2_out);
+    conv1x1(x, n, c_in, h, w, cv2_w, cv2_scale, cv2_is_int8, cv2_c_out, cv2_bias, cv2_out);
     yolo_timing_end();
     yolo_timing_begin("bottleneck");
     const float* bn_in = cv1_out;
     float* bn_out = bn_a;
     for (int32_t i = 0; i < n_bottleneck; i++) {
         bn_out = (i % 2 == 0) ? bn_a : bn_b;
-        
         bottleneck_nchw_f32(
             bn_in, n, cv1_c_out, h, w,
-            bn_cv1_w[i], cv1_c_out, bn_cv1_bias[i],
-            bn_cv2_w[i], cv1_c_out, bn_cv2_bias[i],
+            bn_cv1_w[i], bn_cv1_scale[i], bn_cv1_is_int8[i], cv1_c_out, bn_cv1_bias[i],
+            bn_cv2_w[i], bn_cv2_scale[i], bn_cv2_is_int8[i], cv1_c_out, bn_cv2_bias[i],
             shortcut,
             bn_out);
-        
         bn_in = bn_out;
     }
     yolo_timing_end();
@@ -84,7 +91,7 @@ void c3_nchw_f32(
     concat_nchw_f32(bn_out, cv1_c_out, cv2_out, cv2_c_out, n, h, w, concat_out);
     yolo_timing_end();
     yolo_timing_begin("cv3");
-    conv1x1(concat_out, n, cv1_c_out + cv2_c_out, h, w, cv3_w, cv3_c_out, cv3_bias, y);
+    conv1x1(concat_out, n, cv1_c_out + cv2_c_out, h, w, cv3_w, cv3_scale, cv3_is_int8, cv3_c_out, cv3_bias, y);
     yolo_timing_end();
 
     feature_pool_free(concat_out);

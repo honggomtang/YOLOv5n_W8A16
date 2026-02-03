@@ -47,14 +47,14 @@ int main(void) {
     static float p4_out[255 * 40 * 40];
     static float p5_out[255 * 20 * 20];
     
-    // Detect Head 실행
+    // Detect Head 실행 (FP32 가중치: scale=0, is_int8=0)
     detect_nchw_f32(
         tv_detect_p3, TV_DETECT_P3_C, TV_DETECT_P3_H, TV_DETECT_P3_W,
         tv_detect_p4, TV_DETECT_P4_C, TV_DETECT_P4_H, TV_DETECT_P4_W,
         tv_detect_p5, TV_DETECT_P5_C, TV_DETECT_P5_H, TV_DETECT_P5_W,
-        m0_w, m0_b,
-        m1_w, m1_b,
-        m2_w, m2_b,
+        (const void*)m0_w, 0.f, 0, m0_b,
+        (const void*)m1_w, 0.f, 0, m1_b,
+        (const void*)m2_w, 0.f, 0, m2_b,
         p3_out, p4_out, p5_out);
     
     int all_ok = 1;

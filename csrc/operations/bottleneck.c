@@ -5,8 +5,8 @@
 
 void bottleneck_nchw_f32(
     const float* x, int32_t n, int32_t c, int32_t h, int32_t w,
-    const float* cv1_w, int32_t cv1_c_out, const float* cv1_bias,
-    const float* cv2_w, int32_t cv2_c_out, const float* cv2_bias,
+    const void* cv1_w, float cv1_scale, int cv1_is_int8, int32_t cv1_c_out, const float* cv1_bias,
+    const void* cv2_w, float cv2_scale, int cv2_is_int8, int32_t cv2_c_out, const float* cv2_bias,
     int32_t shortcut,
     float* y)
 {
@@ -19,17 +19,31 @@ void bottleneck_nchw_f32(
         if (cv1_out) feature_pool_free(cv1_out);
         return;
     }
-    
-    conv2d_nchw_f32(x, n, c, h, w,
-                    cv1_w, cv1_c_out, 1, 1,
-                    cv1_bias, 1, 1, 0, 0, 1,
-                    cv1_out, h, w);
+
+    if (cv1_is_int8) {
+        conv2d_nchw_f32_w8(x, n, c, h, w,
+                           (const int8_t*)cv1_w, cv1_scale, cv1_c_out, 1, 1,
+                           cv1_bias, 1, 1, 0, 0, 1,
+                           cv1_out, h, w);
+    } else {
+        conv2d_nchw_f32(x, n, c, h, w,
+                        (const float*)cv1_w, cv1_c_out, 1, 1,
+                        cv1_bias, 1, 1, 0, 0, 1,
+                        cv1_out, h, w);
+    }
     silu_nchw_f32(cv1_out, n, cv1_c_out, h, w, cv1_out);
-    // cv2
-    conv2d_nchw_f32(cv1_out, n, cv1_c_out, h, w,
-                    cv2_w, cv2_c_out, 3, 3,
-                    cv2_bias, 1, 1, 1, 1, 1,
-                    cv2_out, h, w);
+    /* cv2 */
+    if (cv2_is_int8) {
+        conv2d_nchw_f32_w8(cv1_out, n, cv1_c_out, h, w,
+                           (const int8_t*)cv2_w, cv2_scale, cv2_c_out, 3, 3,
+                           cv2_bias, 1, 1, 1, 1, 1,
+                           cv2_out, h, w);
+    } else {
+        conv2d_nchw_f32(cv1_out, n, cv1_c_out, h, w,
+                        (const float*)cv2_w, cv2_c_out, 3, 3,
+                        cv2_bias, 1, 1, 1, 1, 1,
+                        cv2_out, h, w);
+    }
     silu_nchw_f32(cv2_out, n, cv2_c_out, h, w, cv2_out);
     // Shortcut
     if (shortcut && c == cv2_c_out) {

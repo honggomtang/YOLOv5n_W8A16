@@ -204,12 +204,16 @@ def main():
     parser.add_argument("--ref-bin", type=Path, default=DEFAULT_REF_BIN_PATH, help="Python ref detections.bin path")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="output directory for C results")
     parser.add_argument("--ref-out-dir", type=Path, default=DEFAULT_REF_OUTPUT_DIR, help="output directory for ref results")
+    parser.add_argument("--out-name", type=str, default="detections", help="output base name (e.g. detections → detections.txt, detections.jpg)")
     args = parser.parse_args()
     
     out_dir = args.out_dir.expanduser().resolve()
     ref_out_dir = args.ref_out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     
+    out_txt = out_dir / f"{args.out_name}.txt"
+    out_jpg = out_dir / f"{args.out_name}.jpg"
+
     if args.compare:
         # 둘 다 처리하고 비교
         print("=== C Result ===")
@@ -249,9 +253,9 @@ def main():
         print("=== C Result ===")
         dets = read_detections_bin(args.c_bin)
         if dets:
-            write_detections_txt(dets, out_dir / "detections.txt", "C Detection Results")
+            write_detections_txt(dets, out_txt, "C Detection Results")
             if not args.no_viz:
-                visualize(dets, args.img, out_dir / "detections.jpg", "C Result")
+                visualize(dets, args.img, out_jpg, "C Result")
             
             print(f"\nDetections: {len(dets)}")
             for d in dets[:5]:

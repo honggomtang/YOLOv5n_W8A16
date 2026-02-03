@@ -24,6 +24,13 @@
 #ifndef WEIGHTS_DDR_SIZE
 #define WEIGHTS_DDR_SIZE  (16u * 1024u * 1024u)
 #endif
+/* W8A32: USE_WEIGHTS_W8 시 weights_w8.bin DDR 주소 (scale은 w8 내부 포함) */
+#ifndef WEIGHTS_W8_DDR_BASE
+#define WEIGHTS_W8_DDR_BASE  WEIGHTS_DDR_BASE
+#endif
+#ifndef WEIGHTS_W8_DDR_SIZE
+#define WEIGHTS_W8_DDR_SIZE  (4u * 1024u * 1024u)  /* ~2MB */
+#endif
 
 #ifndef DETECT_HEAD_BASE
 #define DETECT_HEAD_BASE  (PLATFORM_DDR_BASE + 0x0E000000u)

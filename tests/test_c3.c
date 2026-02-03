@@ -55,21 +55,25 @@ int main(void) {
     
     static float y_out[1 * 32 * 160 * 160];
     
-    // C3 블록 실행 (Fused)
-    const float* bn_cv1_w_arr[1] = {bn_cv1_w};
+    // C3 블록 실행 (Fused). FP32 가중치이므로 scale=0, is_int8=0
+    const void* bn_cv1_w_arr[1] = {bn_cv1_w};
+    const void* bn_cv2_w_arr[1] = {bn_cv2_w};
+    float bn_cv1_scale[1] = {0.f};
+    int bn_cv1_is_int8[1] = {0};
+    float bn_cv2_scale[1] = {0.f};
+    int bn_cv2_is_int8[1] = {0};
     const float* bn_cv1_b_arr[1] = {bn_cv1_b};
-    const float* bn_cv2_w_arr[1] = {bn_cv2_w};
     const float* bn_cv2_b_arr[1] = {bn_cv2_b};
     
     c3_nchw_f32(
         tv_c3_x, n, c_in, h, w,
-        cv1_w, 16, cv1_b,   // cv1: 32->16
-        cv2_w, 16, cv2_b,   // cv2: 32->16
-        cv3_w, 32, cv3_b,   // cv3: 32->32
-        1,                   // n_bottleneck=1
-        bn_cv1_w_arr, bn_cv1_b_arr,
-        bn_cv2_w_arr, bn_cv2_b_arr,
-        1,                   // shortcut=True (backbone)
+        (const void*)cv1_w, 0.f, 0, 16, cv1_b,
+        (const void*)cv2_w, 0.f, 0, 16, cv2_b,
+        (const void*)cv3_w, 0.f, 0, 32, cv3_b,
+        1,
+        bn_cv1_w_arr, bn_cv1_scale, bn_cv1_is_int8, bn_cv1_b_arr,
+        bn_cv2_w_arr, bn_cv2_scale, bn_cv2_is_int8, bn_cv2_b_arr,
+        1,
         y_out);
     
     const int elems = n * c_out * h * w;

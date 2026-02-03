@@ -87,6 +87,10 @@ YOLOv5n_in_C/
 ### 호스트 (Linux/macOS/Windows)
 
 **1. 준비**  
+- **Python 도구용 가상환경** (numpy, torch, Pillow 등): 프로젝트 루트에서  
+  `python3 -m venv .venv` 후 `.venv/bin/pip install -r requirements.txt`  
+  (Windows: `.venv\Scripts\pip install -r requirements.txt`)  
+  도구 실행 시 `.venv/bin/python tools/...` 사용 권장.
 - 전처리 이미지: `tools/preprocess_image_to_bin.py` → `data/input/preprocessed_image.bin`  
 - 가중치: `tools/export_weights_to_bin.py` → `assets/weights.bin`
 
@@ -96,6 +100,11 @@ YOLOv5n_in_C/
 gcc -o main csrc/main.c csrc/blocks/*.c csrc/operations/*.c csrc/utils/*.c \
     -I. -Icsrc -lm -std=c99 -O2
 ```
+
+W8A32(가중치 INT8) 사용 시: `tools/quantize_weights.py`로 `weights_w8.bin` 생성 후 (scale은 w8 내부 포함)
+
+**FP32 vs W8A32 호스트 비교**: `./run_compare_host.sh` 실행 시 FP32(수정 전) → W8A32(수정 후) 순으로 빌드·실행 후 `data/output/ref_fp32_detections.bin`·`ref_fp32_log.txt`와 `detections.bin`·`w8_log.txt`를 저장하고, `tools/compare_fp32_w8.py`로 검출 개수·항목별 비교 및 L0/total 로그를 출력한다.  
+`-DUSE_WEIGHTS_W8` 추가하여 빌드. (예: `-O2 -DUSE_WEIGHTS_W8`)
 
 Windows(예: MinGW)에서는 `build_host.bat` 또는 위와 동일한 gcc 명령으로 빌드.
 
