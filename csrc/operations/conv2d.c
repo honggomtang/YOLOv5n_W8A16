@@ -1,22 +1,22 @@
 #include "conv2d.h"
+#include <stdint.h>
 
-/* 최적화 요약 (MicroBlaze V / D-Cache 친화):
- * 1. 가중치 재사용: 루프 순서 ic→b→dh→dw→kh→kw. 필터 하나를 한 번 로드해 8x8 타일(64픽셀)에 64회 재사용.
- * 2. Strength reduction: kw 루프에서 x_row++/w_row++ 포인터 증감만 사용.
- * 3. 타일 단위 safe: 타일 전체가 안전 영역인지 한 번만 체크 → 64회 분기 → 1회로 축소.
- * 4. acc_ptr: (dh,dw)마다 base=&acc_buf[dh][dw][0], acc_ptr[b]+=contrib 로 다차원 인덱싱 오버헤드 감소. */
+/* conv2d 최적화 포인트:
+ * - 출력 타일링 (기본 8x8)
+ * - safe 영역/경계 분리 (경계만 bounds 체크)
+ * - 정적 acc 버퍼(BSS) 사용 (bare-metal 스택 절약) */
 #ifndef CONV2D_TILE_H
 #define CONV2D_TILE_H 8
 #endif
 #ifndef CONV2D_TILE_W
 #define CONV2D_TILE_W 8
 #endif
-/* 출력 채널 블록: 한 타일 내에서 입력을 올려두고 여러 oc 연산 → 입력 재사용 극대화 */
+/* 출력 채널 블록(기본 32) */
 #ifndef CONV2D_OC_BLOCK
 #define CONV2D_OC_BLOCK 32
 #endif
 
-/* 누적 버퍼: 스택 대신 BSS 사용 (bare-metal 스택 제한). TILE/OC_BLOCK 매크로와 동일하게. */
+/* 누적 버퍼: 스택 대신 BSS */
 static float conv2d_acc_buf[CONV2D_TILE_H][CONV2D_TILE_W][CONV2D_OC_BLOCK];
 
 void conv2d_nchw_f32(
@@ -36,7 +36,7 @@ void conv2d_nchw_f32(
     const int32_t tile_w = CONV2D_TILE_W;
     const int32_t oc_block = CONV2D_OC_BLOCK;
 
-    /* 패딩이 필요 없는 안전 영역: 가장 안쪽 루프에서 분기 제거 */
+    /* 패딩이 필요 없는 안전 영역 (경계 분기 최소화) */
     const int32_t safe_oh_min = (pad_h + stride_h - 1) / stride_h;
     const int32_t safe_oh_max = (h_in - k_h + pad_h) / stride_h;
     const int32_t safe_ow_min = (pad_w + stride_w - 1) / stride_w;
@@ -159,7 +159,7 @@ void conv2d_nchw_f32(
     }
 }
 
-/* W8A32: int8_t* w + scale, 루프 내 contrib += x * ((float)w_int8 * scale); */
+/* W8A32: INT8 weights (per-tensor scale), FP32 compute */
 void conv2d_nchw_f32_w8(
     const float* x, int32_t n, int32_t c_in, int32_t h_in, int32_t w_in,
     const int8_t* w, float scale, int32_t c_out, int32_t k_h, int32_t k_w,
@@ -186,6 +186,51 @@ void conv2d_nchw_f32_w8(
     const int32_t w_ic_stride = k_h * k_w;
     const int32_t w_oc_stride = c_in * k_h * k_w;
 
+    /* 1x1 fast path */
+    if (k_h == 1 && k_w == 1) {
+        for (int32_t ni = 0; ni < n; ni++) {
+            for (int32_t oh0 = 0; oh0 < h_out; oh0 += tile_h) {
+                const int32_t oh_end = oh0 + tile_h < h_out ? oh0 + tile_h : h_out;
+                const int32_t th = oh_end - oh0;
+                for (int32_t ow0 = 0; ow0 < w_out; ow0 += tile_w) {
+                    const int32_t ow_end = ow0 + tile_w < w_out ? ow0 + tile_w : w_out;
+                    const int32_t tw = ow_end - ow0;
+                    for (int32_t oc0 = 0; oc0 < c_out; oc0 += oc_block) {
+                        const int32_t n_oc = oc0 + oc_block <= c_out ? oc_block : c_out - oc0;
+                        for (int32_t dh = 0; dh < th; dh++) {
+                            for (int32_t dw = 0; dw < tw; dw++) {
+                                for (int32_t b = 0; b < n_oc; b++)
+                                    conv2d_acc_buf[dh][dw][b] = bias_or_null ? bias_or_null[oc0 + b] : 0.0f;
+                            }
+                        }
+                        for (int32_t ic = 0; ic < c_in; ic++) {
+                            const float* x_ch = x + (ni * c_in + ic) * x_c_stride;
+                            for (int32_t dh = 0; dh < th; dh++) {
+                                const int32_t oh = oh0 + dh;
+                                for (int32_t dw = 0; dw < tw; dw++) {
+                                    const int32_t ow = ow0 + dw;
+                                    float x_val = x_ch[oh * x_h_stride + ow];
+                                    for (int32_t b = 0; b < n_oc; b++)
+                                        conv2d_acc_buf[dh][dw][b] += x_val * (float)w[(oc0 + b) * w_oc_stride + ic] * scale;
+                                }
+                            }
+                        }
+                        for (int32_t dh = 0; dh < th; dh++) {
+                            const int32_t oh = oh0 + dh;
+                            for (int32_t dw = 0; dw < tw; dw++) {
+                                const int32_t ow = ow0 + dw;
+                                const int32_t y_off = (ni * c_out + oc0) * h_out * w_out + oh * w_out + ow;
+                                for (int32_t b = 0; b < n_oc; b++)
+                                    y[y_off + b * h_out * w_out] = conv2d_acc_buf[dh][dw][b];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     for (int32_t ni = 0; ni < n; ni++) {
         for (int32_t oh0 = 0; oh0 < h_out; oh0 += tile_h) {
             const int32_t oh_end = oh0 + tile_h < h_out ? oh0 + tile_h : h_out;
@@ -211,6 +256,37 @@ void conv2d_nchw_f32_w8(
                     for (int32_t ic = 0; ic < c_in; ic++) {
                         for (int32_t b = 0; b < n_oc; b++) {
                             const int8_t* w_base = w + (oc0 + b) * w_oc_stride + ic * w_ic_stride;
+                            /* (ic,b)당 1회: int8 → float (scale 포함). local_w는 최대 6x6만 지원. */
+                            float local_w[36];  /* max 6x6 */
+                            const int32_t k_size = k_h * k_w;
+                            const int8_t* w_src = w_base;
+                            int32_t i = 0;
+                            /* 32-bit bundle load는 4B 정렬일 때만 */
+                            if (((uintptr_t)w_src & 3u) == 0) {
+                                /* 2x unroll: 8바이트(2x uint32)씩 */
+                                while (i + 8 <= k_size) {
+                                    uint32_t w4a = *(const uint32_t*)w_src; w_src += 4;
+                                    local_w[i++] = (float)(int8_t)(w4a & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4a >> 8) & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4a >> 16) & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4a >> 24) & 0xFF) * scale;
+                                    uint32_t w4b = *(const uint32_t*)w_src; w_src += 4;
+                                    local_w[i++] = (float)(int8_t)(w4b & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4b >> 8) & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4b >> 16) & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4b >> 24) & 0xFF) * scale;
+                                }
+                                while (i + 4 <= k_size) {
+                                    uint32_t w4 = *(const uint32_t*)w_src; w_src += 4;
+                                    local_w[i++] = (float)(int8_t)(w4 & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4 >> 8) & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4 >> 16) & 0xFF) * scale;
+                                    local_w[i++] = (float)(int8_t)((w4 >> 24) & 0xFF) * scale;
+                                }
+                            }
+                            /* remainder */
+                            for (; i < k_size; i++)
+                                local_w[i] = (float)(*w_src++) * scale;
 
                             if (tile_is_safe) {
                                 for (int32_t dh = 0; dh < th; dh++) {
@@ -223,10 +299,9 @@ void conv2d_nchw_f32_w8(
                                         float contrib = 0.0f;
                                         for (int32_t kh = 0; kh < k_h; kh++) {
                                             const float* x_row = x_base + kh * x_h_stride;
-                                            const int8_t* w_row = w_base + kh * w_k_stride;
-                                            for (int32_t kw = 0; kw < k_w; kw++) {
-                                                contrib += (*x_row++) * ((float)(*w_row++) * scale);
-                                            }
+                                            const float* lw_row = local_w + kh * k_w;
+                                            for (int32_t kw = 0; kw < k_w; kw++)
+                                                contrib += (*x_row++) * lw_row[kw];
                                         }
                                         float* acc_ptr = &conv2d_acc_buf[dh][dw][0];
                                         acc_ptr[b] += contrib;
@@ -239,21 +314,18 @@ void conv2d_nchw_f32_w8(
                                         const int32_t ow = ow0 + dw;
                                         const int32_t in_safe = (oh >= safe_oh_min && oh < safe_oh_max &&
                                                                 ow >= safe_ow_min && ow < safe_ow_max);
-                                        float contrib;
+                                        float contrib = 0.0f;
                                         if (in_safe) {
                                             const int32_t ih0 = oh * stride_h - pad_h;
                                             const int32_t iw0 = ow * stride_w - pad_w;
                                             const float* x_base = x + (ni * c_in + ic) * x_c_stride + ih0 * x_h_stride + iw0;
-                                            contrib = 0.0f;
                                             for (int32_t kh = 0; kh < k_h; kh++) {
                                                 const float* x_row = x_base + kh * x_h_stride;
-                                                const int8_t* w_row = w_base + kh * w_k_stride;
-                                                for (int32_t kw = 0; kw < k_w; kw++) {
-                                                    contrib += (*x_row++) * ((float)(*w_row++) * scale);
-                                                }
+                                                const float* lw_row = local_w + kh * k_w;
+                                                for (int32_t kw = 0; kw < k_w; kw++)
+                                                    contrib += (*x_row++) * lw_row[kw];
                                             }
                                         } else {
-                                            contrib = 0.0f;
                                             for (int32_t kh = 0; kh < k_h; kh++) {
                                                 const int32_t ih = oh * stride_h - pad_h + kh;
                                                 if ((uint32_t)ih >= (uint32_t)h_in) continue;
@@ -261,8 +333,7 @@ void conv2d_nchw_f32_w8(
                                                     const int32_t iw = ow * stride_w - pad_w + kw;
                                                     if ((uint32_t)iw >= (uint32_t)w_in) continue;
                                                     const float* x_ptr = x + (ni * c_in + ic) * x_c_stride + ih * x_h_stride + iw;
-                                                    const int8_t* w_ptr = w + (oc0 + b) * w_oc_stride + ic * w_ic_stride + kh * w_k_stride + kw;
-                                                    contrib += (*x_ptr) * ((float)(*w_ptr) * scale);
+                                                    contrib += (*x_ptr) * local_w[kh * k_w + kw];
                                                 }
                                             }
                                         }

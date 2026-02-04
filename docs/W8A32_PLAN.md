@@ -41,7 +41,7 @@
     - 가중치 텐서만 대상 (키가 `.weight`로 끝나는 것).
     - `scale = max(|w|) / 127` (max가 0이면 작은 epsilon 사용).
     - `w_int8 = round(w_f32 / scale)`, clamp to `[-127, 127]`.
-  - **출력**: `weights_w8.bin` (scale은 w8 내부 텐서 헤더에 포함). `--out-scales` 시 `scales.bin` 선택 출력(호환용).
+  - **출력**: `assets/weights_w8.bin` (scale은 w8 내부 텐서 헤더에 포함). `--out-scales` 시 `scales.bin` 선택 출력(호환용).
 
 **weights_w8.bin 포맷 (A: 텐서별 scale 포함 → 순서/일부만 INT8 변경에도 안전)**  
 - `num_tensors` (4B, little-endian)  
@@ -53,17 +53,17 @@
 ### 2. C 측 변경 (W8A32) — 구현 완료
 - **weights_loader**: `weights_w8.bin`만 로드 (scale은 w8 내부).
   - `weights_load_from_file_w8(w8_path)` (호스트), `weights_init_from_memory_w8(w8_base, w8_size)` (BARE_METAL).
-  - `weights_get_tensor_for_conv(loader, name, &scale, &is_int8)`로 conv용 포인터 + scale + dtype 반환. INT8 텐서는 **버퍼 풀**(`WEIGHTS_DEQUANT_POOL_SIZE`=10) 슬롯에 디양자화 후 반환하거나, conv 루프 내 인라인 디양자화용으로 `int8_t*`+scale 직접 반환.
-  - c3/detect처럼 한 레이어에서 여러 가중치를 동시에 쓰는 경우에도 풀 round-robin으로 덮어쓰기 없음.
-- **conv2d**: `conv2d_nchw_f32_w8(x, ..., int8_t* w, scale, ...)` 추가. 루프 내 `(float)w[i]*scale`로 즉시 복원.
-- **conv_block**: `(void* w, float w_scale, int w_is_int8)` 받아 W8이면 `conv2d_nchw_f32_w8`, 아니면 기존 `conv2d_nchw_f32` 호출.
+  - `weights_get_tensor_for_conv(loader, name, &scale, &is_int8)`로 conv용 `int8_t*`+scale 반환.
+  - **dequant 풀 제거** (보드 heap 4MB 한계). 모든 Conv는 on-the-fly 디양자화.
+- **conv2d**: `conv2d_nchw_f32_w8` — local_w pre-load, 32비트 번들 로드, 1×1 fast path.
+- **conv_block**: `(void* w, float w_scale, int w_is_int8)` 받아 W8이면 `conv2d_nchw_f32_w8` 호출.
 - **C3**: `c3_nchw_f32`가 cv1/cv2/cv3 및 bottleneck 내부 cv1/cv2에 대해 `(void*, scale, is_int8)` 수신. 내부 `conv1x1`·`bottleneck_nchw_f32`가 W8 분기.
 - **Detect**: `detect_nchw_f32`가 m0/m1/m2 가중치에 대해 `(void*, scale, is_int8)` 수신, 1×1 conv 세 번 각각 W8/FP32 분기.
 - **빌드**: `-DUSE_WEIGHTS_W8` 시 W8 가중치 사용.  
   호스트: `assets/weights_w8.bin`  
   BARE_METAL: DDR에 `weights_w8.bin` → `WEIGHTS_W8_DDR_BASE` (`platform_config.h`).
 
-**B (보드 메모리):** 맥에서는 dequant_buf 하나 돌려쓰기로 충분. Arty A7 등 메모리 귀한 보드에서는, 필요 시 **conv 루프 내 인라인 디양자화**로 전환 가능: `contrib += x[idx] * ((float)w_int8[w_idx] * scale);` → dequant_buf 없이 DDR INT8만 읽어 사용.
+**B (보드 메모리):** dequant 풀 제거. (ic,b)당 local_w[36]에 int8→float 변환 후 FP32 연산. 32비트 번들 로드, 1×1 fast path 적용. 자세한 내용은 `W8A32_IMPLEMENTATION.md` 참고.
 
 ### 3. preprocessed_image.bin (processed_image.bin)
 - **현재**: 헤더 24B + FP32 픽셀 데이터. C는 `IMAGE_HEADER_SIZE`로 헤더를 건너뛰고 데이터만 사용.

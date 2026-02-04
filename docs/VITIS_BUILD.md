@@ -35,7 +35,7 @@
 | 항목 | 값 | 비고 |
 |------|-----|------|
 | **MIG(링커 DDR 영역) length** | **32MB** (0x2000000) | 링커가 .text/.data/.bss/heap을 이 범위 안에만 배치 → 0x82000000 이후는 풀 전용 |
-| **Heap 크기** | **4MB** (0x400000) | malloc 등용. 피처맵은 풀(FEATURE_POOL_BASE) 사용하므로 4MB면 충분 |
+| **Heap 크기** | **4MB** (0x400000) | malloc 등용. W8A32: dequant_pool 제거됨(모든 Conv on-the-fly) → 4MB 내 사용 |
 | **Stack 크기** | **64KB** (0x10000) | BRAM에 배치 권장 (`.stack` → `local_memory_cntrl`) |
 
 **필수 설정:**

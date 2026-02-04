@@ -1,4 +1,4 @@
-# YOLOv5n Pure C Implementation
+# YOLOv5n Pure C Implementation (W8A32 지원)
 
 순수 C로 구현한 YOLOv5n(nano) 객체 탐지 추론 엔진. 외부 라이브러리 없이 동작하며, 호스트 빌드와 **Bare-metal(FPGA)** 빌드를 하나의 코드베이스로 지원한다.
 
@@ -12,10 +12,11 @@
 ## 폴더 구조
 
 ```
-YOLOv5n_in_C/
+YOLOv5n_W8A32/
 ├── assets/                     # 모델 파일
 │   ├── yolov5n.pt              # PyTorch 원본 모델
-│   └── weights.bin             # C용 변환된 가중치 (Fused)
+│   ├── weights.bin             # C용 변환된 가중치 (FP32)
+│   └── weights_w8.bin          # W8A32 가중치 (INT8+FP32 혼합, scale은 내부 포함)
 │
 ├── csrc/                        # C 소스 코드
 │   ├── main.c                  # 메인 추론 파이프라인
@@ -38,7 +39,7 @@ YOLOv5n_in_C/
 │   │   └── upsample.c/h        # Nearest Neighbor 2× Upsampling
 │   │
 │   └── utils/                   # 유틸리티
-│       ├── weights_loader.c/h  # weights.bin 로더 (DDR 제로카피 지원)
+│       ├── weights_loader.c/h  # weights.bin / weights_w8.bin 로더 (DDR 제로카피 지원)
 │       ├── image_loader.c/h    # 전처리된 이미지 로더 (DDR 제로카피 지원)
 │       ├── feature_pool.c/h    # 피처맵 풀 할당자 (버퍼 재사용)
 │       ├── mcycle.h            # 단계별 시간/사이클 측정 (mcycle 호스트 타이머)
@@ -101,12 +102,14 @@ gcc -o main csrc/main.c csrc/blocks/*.c csrc/operations/*.c csrc/utils/*.c \
     -I. -Icsrc -lm -std=c99 -O2
 ```
 
-W8A32(가중치 INT8) 사용 시: `tools/quantize_weights.py`로 `weights_w8.bin` 생성 후 (scale은 w8 내부 포함)
+W8A32(가중치 INT8) 사용 시: `tools/quantize_weights.py`로 `assets/weights_w8.bin` 생성 후 (scale은 w8 내부 포함)
 
 **FP32 vs W8A32 호스트 비교**: `./run_compare_host.sh` 실행 시 FP32(수정 전) → W8A32(수정 후) 순으로 빌드·실행 후 `data/output/ref_fp32_detections.bin`·`ref_fp32_log.txt`와 `detections.bin`·`w8_log.txt`를 저장하고, `tools/compare_fp32_w8.py`로 검출 개수·항목별 비교 및 L0/total 로그를 출력한다.  
 `-DUSE_WEIGHTS_W8` 추가하여 빌드. (예: `-O2 -DUSE_WEIGHTS_W8`)
 
-Windows(예: MinGW)에서는 `build_host.bat` 또는 위와 동일한 gcc 명령으로 빌드.
+Windows(예: MinGW)에서는:
+- FP32: `build_host.bat`
+- W8A32: `build_host.bat w8`
 
 **3. 실행**
 
@@ -119,9 +122,16 @@ Windows(예: MinGW)에서는 `build_host.bat` 또는 위와 동일한 gcc 명령
 Windows: `main.exe`
 
 **4. 결과**  
-- 입력: `data/input/preprocessed_image.bin`, 가중치: `assets/weights.bin` (파일에서 로드)  
+- 입력: `data/input/preprocessed_image.bin`  
+  - FP32 빌드: `assets/weights.bin` 로드  
+  - W8A32 빌드(`-DUSE_WEIGHTS_W8`): `assets/weights_w8.bin` 로드  
 - 출력: `data/output/detections.bin` (1바이트 개수 + 12바이트×N 검출)  
 - 콘솔에 **각 레이어/연산을 지날 때마다** `  L0 123.45 ms (0x...)` 형태로 즉시 출력되며, 마지막에 `[time] backbone=... ms ... total=... ms` 요약이 출력됨. BARE_METAL 보드의 동일 단위(ms) 출력과 직접 비교 가능.
+
+## GitHub에 올릴 때 (권장)
+
+- **커밋 제외**: `assets/weights_w8.bin`, `data/output/detections.*` (대용량/실행 산출물)
+- 필요 시 가중치 바이너리는 Git LFS 사용을 권장
 
 ### Bare-metal (Vitis, Arty A7 + MicroBlaze V 등)
 
@@ -215,3 +225,4 @@ Conv2D는 D-Cache·메모리 대역폭을 줄이기 위해 다음을 적용했�
 
 - YOLOv5 계열 모델·가중치 사용 시 Ultralytics 라이선스 확인
 - 변경 이력: [CHANGELOG.md](CHANGELOG.md)
+ - W8A32 구현 정리: [docs/W8A32_IMPLEMENTATION.md](docs/W8A32_IMPLEMENTATION.md)

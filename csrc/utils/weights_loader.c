@@ -32,9 +32,6 @@ static int parse_weights_data(const uint8_t* ptr, size_t data_len, weights_loade
     loader->num_tensors = (int32_t)num_tensors;
     loader->tensors = (tensor_info_t*)calloc(num_tensors, sizeof(tensor_info_t));
     if (!loader->tensors) return -1;
-    loader->dequant_pool_base = NULL;
-    loader->dequant_buf_cap = 0;
-    loader->dequant_pool_next = 0;
 
     for (int i = 0; i < (int)num_tensors; i++) {
         tensor_info_t* t = &loader->tensors[i];
@@ -93,12 +90,11 @@ static int parse_weights_data(const uint8_t* ptr, size_t data_len, weights_loade
     return 0;
 }
 
-/* W8A32: weights_w8.bin 파싱. scale은 INT8 텐서 헤더에 포함 (A: 텐서별 매칭, 순서 독립). */
+/* W8A32: weights_w8.bin 파싱 (INT8 텐서 헤더에 scale 포함, dequant_pool 없음). */
 static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
                             weights_loader_t* loader, int zero_copy) {
     const uint8_t* curr = w8_ptr;
     const uint8_t* end = w8_ptr + w8_len;
-    size_t max_int8_elems = 0;
 
     if (curr + 4 > end) return -1;
     uint32_t num_tensors;
@@ -107,9 +103,6 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
     loader->num_tensors = (int32_t)num_tensors;
     loader->tensors = (tensor_info_t*)calloc(num_tensors, sizeof(tensor_info_t));
     if (!loader->tensors) return -1;
-    loader->dequant_pool_base = NULL;
-    loader->dequant_buf_cap = 0;
-    loader->dequant_pool_next = 0;
 
     for (int i = 0; i < (int)num_tensors; i++) {
         tensor_info_t* t = &loader->tensors[i];
@@ -171,8 +164,6 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
             }
             size_t data_bytes = t->num_elements * (size_t)1;
             if (curr + data_bytes > end) return -1;
-            if (t->num_elements > max_int8_elems)
-                max_int8_elems = t->num_elements;
             if (zero_copy) {
                 t->data_int8 = (int8_t*)curr;
                 curr += data_bytes;
@@ -185,14 +176,6 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
             }
         } else
             return -1;
-    }
-
-    /* B: 버퍼 풀 — c3/detect 등에서 여러 가중치를 동시에 쓰므로 슬롯 여러 개 필요 */
-    if (max_int8_elems > 0) {
-        size_t pool_bytes = (size_t)WEIGHTS_DEQUANT_POOL_SIZE * max_int8_elems * sizeof(float);
-        loader->dequant_pool_base = (float*)malloc(pool_bytes);
-        if (!loader->dequant_pool_base) return -1;
-        loader->dequant_buf_cap = max_int8_elems;
     }
     return 0;
 }
@@ -291,6 +274,7 @@ const tensor_info_t* weights_find_tensor(const weights_loader_t* loader, const c
     return NULL;
 }
 
+/* FP32 텐서만 반환. INT8 conv 가중치는 W_CONV(weights_get_tensor_for_conv) 사용. */
 const float* weights_get_tensor_data(weights_loader_t* loader, const char* name) {
     const tensor_info_t* t = weights_find_tensor(loader, name);
     if (!t) {
@@ -299,18 +283,9 @@ const float* weights_get_tensor_data(weights_loader_t* loader, const char* name)
 #endif
         return NULL;
     }
-    if (t->dtype == WEIGHTS_DTYPE_INT8 && t->data_int8 && loader->dequant_pool_base && t->num_elements <= loader->dequant_buf_cap) {
-        /* 슬롯 하나 사용 (round-robin) — c3/detect에서 여러 W() 호출이 인자 평가 시 순차 실행되므로 서로 다른 슬롯에 채워짐 */
-        int slot = loader->dequant_pool_next;
-        loader->dequant_pool_next = (slot + 1) % WEIGHTS_DEQUANT_POOL_SIZE;
-        float* dst = loader->dequant_pool_base + (size_t)slot * loader->dequant_buf_cap;
-        const int8_t* src = t->data_int8;
-        float s = t->scale;
-        size_t n = t->num_elements;
-        for (size_t i = 0; i < n; i++)
-            dst[i] = (float)src[i] * s;
-        return dst;
-    }
+    /* INT8 텐서: dequant_pool 제거됨. bias/BN은 FP32만 W() 사용. */
+    if (t->dtype == WEIGHTS_DTYPE_INT8)
+        return NULL;
     return t->data;
 }
 
@@ -347,11 +322,7 @@ void weights_free(weights_loader_t* loader) {
                 free(t->data);
         }
     }
-    if (loader->dequant_pool_base) free(loader->dequant_pool_base);
     free(loader->tensors);
     loader->tensors = NULL;
     loader->num_tensors = 0;
-    loader->dequant_pool_base = NULL;
-    loader->dequant_buf_cap = 0;
-    loader->dequant_pool_next = 0;
 }

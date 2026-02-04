@@ -1,7 +1,0 @@
-# C Detection Results
-# Detections: 3
-# Format: class_id class_name confidence x y w h
-
-0 person          0.8000  474  328  205  337
-0 person          0.3882  218  365  303  268
-27 tie             0.2667  235  426   32  138

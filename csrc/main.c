@@ -48,6 +48,11 @@
 #define YOLO_VERBOSE 1
 #endif
 
+/* 디버그 출력(기본 OFF). 필요 시 빌드 옵션으로 -DYOLO_DEBUG=1 */
+#ifndef YOLO_DEBUG
+#define YOLO_DEBUG 0
+#endif
+
 #if defined(BARE_METAL)
 #define YOLO_LOG(...) xil_printf(__VA_ARGS__)
 #elif YOLO_VERBOSE
@@ -119,12 +124,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 #endif
-    {
+    if (YOLO_DEBUG) {
         const float* bias24 = (const float*)W("model.24.m.0.bias");
         if (bias24) {
             uint32_t u0 = *(const uint32_t*)&bias24[0];
             uint32_t u4 = *(const uint32_t*)&bias24[4];
-            YOLO_LOG("DBG model.24.m.0.bias @0x%08X [0]=0x%08X [4]=0x%08X\n",
+            YOLO_LOG("DEBUG bias24 @0x%08X [0]=0x%08X [4]=0x%08X\n",
                      (unsigned)(uintptr_t)bias24, (unsigned)u0, (unsigned)u4);
         }
     }
@@ -200,12 +205,18 @@ int main(int argc, char* argv[]) {
 #ifdef BARE_METAL
     Xil_DCacheInvalidateRange((uintptr_t)IMAGE_DDR_BASE, (unsigned int)IMAGE_DDR_SIZE);
     Xil_DCacheInvalidateRange((uintptr_t)WEIGHTS_DDR_BASE, (unsigned int)WEIGHTS_DDR_SIZE);
-    {
-        const float* pw = (const float*)W("model.0.conv.weight");
+    if (YOLO_DEBUG) {
         float img0 = img.data ? img.data[0] : 0.0f;
         uint32_t u_img = *(const uint32_t*)(&img0);
-        uint32_t u_w   = pw ? *(const uint32_t*)pw : 0u;
-        YOLO_LOG("DBG img[0]=0x%08X w0[0]=0x%08X\n", (unsigned)u_img, (unsigned)u_w);
+#ifdef USE_WEIGHTS_W8
+        { float _sw; int _iw; void* _pw = W_CONV("model.0.conv.weight", &_sw, &_iw);
+          uint32_t u_w = _pw && _iw ? (uint32_t)((const int8_t*)_pw)[0] : 0u;
+          YOLO_LOG("DEBUG img0=0x%08X w0b0=0x%02X\n", (unsigned)u_img, (unsigned)u_w); }
+#else
+        { const float* pw = (const float*)W("model.0.conv.weight");
+          uint32_t u_w = pw ? *(const uint32_t*)pw : 0u;
+          YOLO_LOG("DEBUG img0=0x%08X w0f0=0x%08X\n", (unsigned)u_img, (unsigned)u_w); }
+#endif
     }
 #endif
     YOLO_LOG("Running inference...\n");
@@ -382,10 +393,11 @@ int main(int argc, char* argv[]) {
     // Layer 9: SPPF
     POOL_ALLOC(l9, sz_l9);
     t_layer = timer_read64();
-    sppf_nchw_f32(l8, n, 256, 20, 20,
-        W("model.9.cv1.conv.weight"), 128, W("model.9.cv1.conv.bias"),
-        W("model.9.cv2.conv.weight"), 256, W("model.9.cv2.conv.bias"),
-        5, l9);
+    { float s1, s2; int i1, i2; void* w1 = W_CONV("model.9.cv1.conv.weight", &s1, &i1); void* w2 = W_CONV("model.9.cv2.conv.weight", &s2, &i2);
+      sppf_nchw_f32(l8, n, 256, 20, 20,
+          w1, s1, i1, 128, W("model.9.cv1.conv.bias"),
+          w2, s2, i2, 256, W("model.9.cv2.conv.bias"),
+          5, l9); }
     layer_cycles[9] = timer_delta64(t_layer, timer_read64());
     LAYER_LOG(9, layer_cycles[9], &l9[0]);
     yolo_timing_print_layer_ops(9);
@@ -689,17 +701,9 @@ int main(int argc, char* argv[]) {
     YOLO_LOG("  dec %.2f ms\n", LAYER_MS(cycles_decode));
 #endif
     yolo_timing_print_layer_ops(25);
-    if (p3) {
-        int do_dbg = 0;
-#ifdef BARE_METAL
-        do_dbg = (num_dets == 0);
-#else
-        do_dbg = 1;
-#endif
-        if (do_dbg) {
-            union { float f; uint32_t u; } u0 = { .f = p3[0] }, u1 = { .f = p3[1] }, u4 = { .f = p3[4 * 80 * 80] };
-            YOLO_LOG("DBG p3[0]=0x%08X p3[1]=0x%08X p3[obj0]=0x%08X\n", (unsigned)u0.u, (unsigned)u1.u, (unsigned)u4.u);
-        }
+    if (YOLO_DEBUG && p3) {
+        union { float f; uint32_t u; } u0 = { .f = p3[0] }, u1 = { .f = p3[1] }, u4 = { .f = p3[4 * 80 * 80] };
+        YOLO_LOG("DEBUG p3[0]=0x%08X p3[1]=0x%08X p3[obj0]=0x%08X\n", (unsigned)u0.u, (unsigned)u1.u, (unsigned)u4.u);
     }
 
     // Sort by confidence

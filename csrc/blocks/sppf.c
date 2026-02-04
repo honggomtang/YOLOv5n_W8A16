@@ -8,8 +8,8 @@
 
 void sppf_nchw_f32(
     const float* x, int32_t n, int32_t c_in, int32_t h, int32_t w,
-    const float* cv1_w, int32_t cv1_c_out, const float* cv1_bias,
-    const float* cv2_w, int32_t cv2_c_out, const float* cv2_bias,
+    const void* cv1_w, float cv1_scale, int cv1_is_int8, int32_t cv1_c_out, const float* cv1_bias,
+    const void* cv2_w, float cv2_scale, int cv2_is_int8, int32_t cv2_c_out, const float* cv2_bias,
     int32_t pool_k,
     float* y)
 {
@@ -33,10 +33,17 @@ void sppf_nchw_f32(
         return;
     }
     yolo_timing_begin("cv1");
-    conv2d_nchw_f32(x, n, c_in, h, w,
-                    cv1_w, cv1_c_out, 1, 1,
-                    cv1_bias, 1, 1, 0, 0, 1,
-                    x1, h, w);
+    if (cv1_is_int8 && cv1_w) {
+        conv2d_nchw_f32_w8(x, n, c_in, h, w,
+                           (const int8_t*)cv1_w, cv1_scale, cv1_c_out, 1, 1,
+                           cv1_bias, 1, 1, 0, 0, 1,
+                           x1, h, w);
+    } else if (cv1_w) {
+        conv2d_nchw_f32(x, n, c_in, h, w,
+                        (const float*)cv1_w, cv1_c_out, 1, 1,
+                        cv1_bias, 1, 1, 0, 0, 1,
+                        x1, h, w);
+    }
     silu_nchw_f32(x1, n, cv1_c_out, h, w, x1);
     yolo_timing_end();
 
@@ -51,10 +58,17 @@ void sppf_nchw_f32(
                      n, h, w, cat);
     yolo_timing_end();
     yolo_timing_begin("cv2");
-    conv2d_nchw_f32(cat, n, 4 * cv1_c_out, h, w,
-                    cv2_w, cv2_c_out, 1, 1,
-                    cv2_bias, 1, 1, 0, 0, 1,
-                    y, h, w);
+    if (cv2_is_int8 && cv2_w) {
+        conv2d_nchw_f32_w8(cat, n, 4 * cv1_c_out, h, w,
+                           (const int8_t*)cv2_w, cv2_scale, cv2_c_out, 1, 1,
+                           cv2_bias, 1, 1, 0, 0, 1,
+                           y, h, w);
+    } else if (cv2_w) {
+        conv2d_nchw_f32(cat, n, 4 * cv1_c_out, h, w,
+                        (const float*)cv2_w, cv2_c_out, 1, 1,
+                        cv2_bias, 1, 1, 0, 0, 1,
+                        y, h, w);
+    }
     silu_nchw_f32(y, n, cv2_c_out, h, w, y);
     yolo_timing_end();
 
