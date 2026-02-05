@@ -90,6 +90,40 @@ static int parse_weights_data(const uint8_t* ptr, size_t data_len, weights_loade
     return 0;
 }
 
+/* [OC, IC, KH, KW] → [OC_padded/4, IC, KH, KW] with 4 int8 per uint32_t. OC_padded = (OC+3)&~3; tail padded with 0. */
+static void repack_conv2d_oc4(uint8_t* dst, const int8_t* src,
+    int32_t oc, int32_t ic, int32_t kh, int32_t kw) {
+    const int32_t oc_padded = (oc + 3) & ~3;
+    const int32_t ic_kh_kw = ic * kh * kw;
+    const int32_t kh_kw = kh * kw;
+    for (int32_t g = 0; g < oc_padded / 4; g++) {
+        for (int32_t i = 0; i < ic; i++) {
+            for (int32_t kh_ = 0; kh_ < kh; kh_++) {
+                for (int32_t kw_ = 0; kw_ < kw; kw_++) {
+                    int32_t base = i * kh_kw + kh_ * kw + kw_;
+                    uint32_t b0 = 0, b1 = 0, b2 = 0, b3 = 0;
+                    if (g * 4 + 0 < oc) b0 = (uint32_t)(uint8_t)src[(g * 4 + 0) * ic_kh_kw + base];
+                    if (g * 4 + 1 < oc) b1 = (uint32_t)(uint8_t)src[(g * 4 + 1) * ic_kh_kw + base];
+                    if (g * 4 + 2 < oc) b2 = (uint32_t)(uint8_t)src[(g * 4 + 2) * ic_kh_kw + base];
+                    if (g * 4 + 3 < oc) b3 = (uint32_t)(uint8_t)src[(g * 4 + 3) * ic_kh_kw + base];
+                    uint32_t packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                    size_t dst_off = (size_t)(g * ic * kh_kw + base) * 4u;
+                    *(uint32_t*)(dst + dst_off) = packed;
+                }
+            }
+        }
+    }
+}
+
+/* 4바이트 정렬 버퍼 할당 (conv2d packed 가중치: MicroBlaze 등에서 비정렬 접근 시 하드웨어 에러 방지). */
+static void* alloc_aligned_4(size_t size) {
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+    return aligned_alloc(4, size);
+#else
+    return malloc(size);  /* 호스트 malloc은 보통 8바이트 정렬. BARE_METAL에서는 4바이트 정렬 할당자 사용 권장. */
+#endif
+}
+
 /* W8A32: weights_w8.bin 파싱 (INT8 텐서 헤더에 scale 포함, dequant_pool 없음). */
 static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
                             weights_loader_t* loader, int zero_copy) {
@@ -164,15 +198,31 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
             }
             size_t data_bytes = t->num_elements * (size_t)1;
             if (curr + data_bytes > end) return -1;
+            const int8_t* src_int8 = NULL;
             if (zero_copy) {
                 t->data_int8 = (int8_t*)curr;
                 curr += data_bytes;
                 t->data_owned = 0;
+                src_int8 = t->data_int8;
             } else {
                 t->data_int8 = (int8_t*)malloc(data_bytes);
                 if (!t->data_int8) return -1;
                 safe_read(t->data_int8, &curr, data_bytes);
                 t->data_owned = 1;
+                src_int8 = t->data_int8;
+            }
+            /* 4-way pack: 모든 Conv 가중치 [OC,IC,KH,KW] → [OC_padded/4,IC,KH,KW]. OC 미만은 0 패딩. 4바이트 정렬 할당. */
+            if (t->ndim == 4) {
+                int32_t oc = t->shape[0], ic = t->shape[1], kh = t->shape[2], kw = t->shape[3];
+                int32_t oc_padded = (oc + 3) & ~3;
+                size_t packed_bytes = (size_t)oc_padded * (size_t)ic * (size_t)kh * (size_t)kw;
+                uint8_t* packed_buf = (uint8_t*)alloc_aligned_4(packed_bytes);
+                if (packed_buf) {
+                    repack_conv2d_oc4(packed_buf, src_int8, oc, ic, kh, kw);
+                    if (t->data_owned) free(t->data_int8);
+                    t->data_int8 = (int8_t*)packed_buf;
+                    t->data_owned = 1;
+                }
             }
         } else
             return -1;

@@ -4,7 +4,7 @@
 
 #include "test_vectors_sppf.h"
 #include "../csrc/utils/weights_loader.h"
-#include "../csrc/blocks/sppf.h"
+#include "../csrc/blocks/sppf_w8a32.h"
 
 static float max_abs_diff(const float* a, const float* b, int n) {
     float m = 0.0f;
@@ -49,12 +49,12 @@ int main(void) {
 
     static float y_out[1 * 256 * 20 * 20];
 
-    // SPPF 블록 실행 (Fused)
-    sppf_nchw_f32(
+    // SPPF 블록 실행 (Fused, FP32 가중치: scale=1, is_int8=0)
+    sppf_nchw_f32_w8a32(
         tv_sppf_x, n, c_in, h, w,
-        cv1_w, 128, cv1_b,  // cv1: 256->128
-        cv2_w, 256, cv2_b,  // cv2: 512->256
-        5,                   // pool_k=5
+        cv1_w, 1.0f, 0, 128, cv1_b,   // cv1: 256->128
+        cv2_w, 1.0f, 0, 256, cv2_b,   // cv2: 512->256
+        5,                             // pool_k=5
         y_out);
 
     const int elems = n * c_out * h_out * w_out;

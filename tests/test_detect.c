@@ -4,7 +4,7 @@
 
 #include "test_vectors_detect.h"
 #include "../csrc/utils/weights_loader.h"
-#include "../csrc/blocks/detect.h"
+#include "../csrc/blocks/detect_w8a32.h"
 
 static float max_abs_diff(const float* a, const float* b, int n) {
     float m = 0.0f;
@@ -48,7 +48,7 @@ int main(void) {
     static float p5_out[255 * 20 * 20];
     
     // Detect Head 실행 (FP32 가중치: scale=0, is_int8=0)
-    detect_nchw_f32(
+    detect_nchw_f32_w8a32(
         tv_detect_p3, TV_DETECT_P3_C, TV_DETECT_P3_H, TV_DETECT_P3_W,
         tv_detect_p4, TV_DETECT_P4_C, TV_DETECT_P4_H, TV_DETECT_P4_W,
         tv_detect_p5, TV_DETECT_P5_C, TV_DETECT_P5_H, TV_DETECT_P5_W,

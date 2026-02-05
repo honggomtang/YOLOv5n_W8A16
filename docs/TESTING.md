@@ -5,9 +5,12 @@
 ### 1. 전체 추론 테스트
 
 ```bash
-# 빌드 (BARE_METAL 없이)
-gcc -o main csrc/main.c csrc/blocks/*.c csrc/operations/*.c csrc/utils/*.c \
-    -I. -Icsrc -lm -std=c99 -O2
+# 빌드 (BARE_METAL 없이, W8A32 소스 사용)
+gcc -o main csrc/main.c \
+  csrc/blocks/conv_w8a32.c csrc/blocks/c3_w8a32.c csrc/blocks/decode.c csrc/blocks/detect_w8a32.c csrc/blocks/nms.c csrc/blocks/sppf_w8a32.c \
+  csrc/operations/bottleneck_w8a32.c csrc/operations/concat_w8a32.c csrc/operations/conv2d_w8a32.c csrc/operations/maxpool2d_w8a32.c csrc/operations/silu_w8a32.c csrc/operations/upsample_w8a32.c \
+  csrc/utils/feature_pool.c csrc/utils/image_loader.c csrc/utils/weights_loader.c csrc/utils/timing.c csrc/utils/uart_dump.c \
+  -I. -Icsrc -lm -std=c99 -O2
 
 # 실행 (파일 I/O 경로 사용)
 ./main
@@ -28,9 +31,9 @@ python tools/decode_detections.py
 기존 테스트들은 `weights_load_from_file`을 사용하므로 **변경 없이** 작동합니다.
 
 ```bash
-# 예: Conv 블록 테스트
+# 예: Conv 블록 테스트 (W8A32 소스 사용)
 gcc -o tests/test_conv tests/test_conv.c \
-    csrc/blocks/conv.c csrc/operations/conv2d.c csrc/operations/silu.c \
+    csrc/blocks/conv_w8a32.c csrc/operations/conv2d_w8a32.c csrc/operations/silu_w8a32.c \
     csrc/utils/weights_loader.c \
     -I. -Icsrc -lm -std=c99 -O2
 ./tests/test_conv

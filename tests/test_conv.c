@@ -4,7 +4,7 @@
 
 #include "test_vectors_conv.h"
 #include "../csrc/utils/weights_loader.h"
-#include "../csrc/blocks/conv.h"
+#include "../csrc/blocks/conv_w8a32.h"
 
 static float max_abs_diff(const float* a, const float* b, int n) {
     float m = 0.0f;
@@ -48,7 +48,7 @@ int main(void) {
     static float y_out[1 * 16 * 320 * 320];
 
     // Conv 블록 실행 (Fused: Conv + Bias + SiLU)
-    conv_block_nchw_f32(
+    conv_block_nchw_f32_w8a32(
         tv_x, n, c_in, h_in, w_in,
         conv_weight, c_out, k, k,
         stride, stride,

@@ -4,7 +4,7 @@
 
 #include "test_vectors_c3.h"
 #include "../csrc/utils/weights_loader.h"
-#include "../csrc/blocks/c3.h"
+#include "../csrc/blocks/c3_w8a32.h"
 
 static float max_abs_diff(const float* a, const float* b, int n) {
     float m = 0.0f;
@@ -65,7 +65,7 @@ int main(void) {
     const float* bn_cv1_b_arr[1] = {bn_cv1_b};
     const float* bn_cv2_b_arr[1] = {bn_cv2_b};
     
-    c3_nchw_f32(
+    c3_nchw_f32_w8a32(
         tv_c3_x, n, c_in, h, w,
         (const void*)cv1_w, 0.f, 0, 16, cv1_b,
         (const void*)cv2_w, 0.f, 0, 16, cv2_b,

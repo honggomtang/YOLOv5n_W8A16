@@ -3,7 +3,7 @@
 
 #include "test_vectors_upsample.h"
 
-#include "../csrc/operations/upsample.h"
+#include "../csrc/operations/upsample_w8a32.h"
 
 static float max_abs_diff(const float* a, const float* b, int n) {
     float m = 0.0f;
@@ -25,7 +25,7 @@ int main(void) {
 
     static float y_out[TV_UPSAMPLE_X_N * TV_UPSAMPLE_Y_C * TV_UPSAMPLE_Y_H * TV_UPSAMPLE_Y_W];
 
-    upsample_nearest2x_nchw_f32(tv_upsample_x, n, c, h, w, y_out);
+    upsample_nearest2x_nchw_f32_w8a32(tv_upsample_x, n, c, h, w, y_out);
 
     const int elems = n * TV_UPSAMPLE_Y_C * h_out * w_out;
     float diff = max_abs_diff(y_out, tv_upsample_y, elems);

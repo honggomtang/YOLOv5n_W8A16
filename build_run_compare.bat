@@ -20,7 +20,7 @@ set "CFLAGS=-I. -Icsrc -std=c99 -O2 -lm"
 if /i "%1"=="w8" (
   set "CFLAGS=%CFLAGS% -DUSE_WEIGHTS_W8"
 )
-"%GCC%" -o main.exe csrc/main.c csrc/blocks/conv.c csrc/blocks/c3.c csrc/blocks/decode.c csrc/blocks/detect.c csrc/blocks/nms.c csrc/blocks/sppf.c csrc/operations/bottleneck.c csrc/operations/concat.c csrc/operations/conv2d.c csrc/operations/maxpool2d.c csrc/operations/silu.c csrc/operations/upsample.c csrc/utils/feature_pool.c csrc/utils/image_loader.c csrc/utils/weights_loader.c csrc/utils/uart_dump.c %CFLAGS%
+"%GCC%" -o main.exe csrc/main.c csrc/blocks/conv_w8a32.c csrc/blocks/c3_w8a32.c csrc/blocks/decode.c csrc/blocks/detect_w8a32.c csrc/blocks/nms.c csrc/blocks/sppf_w8a32.c csrc/operations/bottleneck_w8a32.c csrc/operations/concat_w8a32.c csrc/operations/conv2d_w8a32.c csrc/operations/maxpool2d_w8a32.c csrc/operations/silu_w8a32.c csrc/operations/upsample_w8a32.c csrc/utils/feature_pool.c csrc/utils/image_loader.c csrc/utils/weights_loader.c csrc/utils/uart_dump.c %CFLAGS%
 if errorlevel 1 (
     echo [ERROR] Build failed. Fix errors above, then run again.
     exit /b 1

@@ -29,6 +29,9 @@ static uint8_t* host_pool;
 
 static size_t free_head;
 
+/* 스크래치패드: 포인터 하나만 밀어서 할당. free 없음, 파편화 없음. */
+static size_t scratch_offset;
+
 static inline size_t align_up(size_t x, size_t a) {
     return (x + a - 1) & ~(a - 1);
 }
@@ -38,12 +41,16 @@ void feature_pool_init(void) {
     pool_base = (uint8_t*)FEATURE_POOL_BASE;
     pool_size = FEATURE_POOL_SIZE;
 #else
-    pool_size = 22u * 1024u * 1024u;  /* 호스트: 22MB */
+    pool_size = 22u * 1024u * 1024u;  /* 호스트: 22MB (W8A32) */
+#ifdef USE_W8A16
+    pool_size = 48u * 1024u * 1024u;  /* W8A16 scratch: 모든 중간 텐서 연속 할당 (~24MB+ 여유) */
+#endif
     host_pool = (uint8_t*)malloc(pool_size);
     pool_base = host_pool;
     if (!pool_base) pool_size = 0;
 #endif
     free_head = NIL;
+    scratch_offset = align_up(HEADER_SIZE, ALIGN);
     if (pool_base && pool_size >= HEADER_SIZE * 2) {
         size_t* hdr = (size_t*)(pool_base + 0);
         hdr[0] = pool_size;
@@ -149,6 +156,19 @@ void feature_pool_free(void* ptr) {
             unlink_free_block(next_in_list, base);
         }
     }
+}
+
+void feature_pool_scratch_reset(void) {
+    scratch_offset = align_up(HEADER_SIZE, ALIGN);
+}
+
+void* feature_pool_scratch_alloc(size_t size) {
+    if (!pool_base || size == 0) return NULL;
+    size_t need = align_up(size, ALIGN);
+    if (scratch_offset + need > pool_size) return NULL;
+    void* ptr = (void*)(pool_base + scratch_offset);
+    scratch_offset += need;
+    return ptr;
 }
 
 void feature_pool_reset(void) {
