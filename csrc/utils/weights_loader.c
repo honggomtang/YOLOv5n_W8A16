@@ -133,6 +133,8 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
     if (curr + 4 > end) return -1;
     uint32_t num_tensors;
     safe_read(&num_tensors, &curr, 4);
+    /* YOLOv5n weights_w8.bin: num_tensors ~121. 0이면 DDR 미로드, 비정상 크기는 파싱 오류 */
+    if (num_tensors == 0 || num_tensors > 512) return -1;
 
     loader->num_tensors = (int32_t)num_tensors;
     loader->tensors = (tensor_info_t*)calloc(num_tensors, sizeof(tensor_info_t));

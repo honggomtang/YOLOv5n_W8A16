@@ -99,6 +99,11 @@ W8A16 Conv 가중치는 로드 직후 **모든** 4D INT8 텐서에 대해 repack
   - **1x1**: `w_p[(oc0/4 + b4/4) * packed_oc_stride + ic * packed_ic_stride]`. `packed_oc_stride = c_in`, `packed_ic_stride = 1`.
   - **일반(KH,KW)**: `w_p[og * packed_oc_stride + ic * packed_ic_stride + kh*k_w + kw]`. `packed_oc_stride = c_in * k_h * k_w`, `packed_ic_stride = k_h * k_w`.
   - 하나의 `uint32_t`를 로드한 뒤 4바이트를 unpack하여 `w0..w3`로 쓰고, 하나의 `x_val`에 대해 `acc[b4..b4+3]`에 각각 `x_val*w0`, `x_val*w1`, … 누적. **OC가 4의 배수가 아닌 경우**(예: Detect 255) 패딩된 슬롯은 `if (b4+j < n_oc)`로 누적에서 제외한다.
+- **입력(x) 32비트 로드 (MicroBlaze 등 32비트 최적화)**
+  - 활성화 `x`를 한 개씩이 아니라 **가능하면 `uint32_t`로 2개(int16_t 쌍)씩** 읽어 로드 횟수 감소.
+  - **1x1 경로**: `dw` 루프를 2씩 증가. 주소가 4바이트 정렬일 때 `*(uint32_t*)(x_row + dw)`로 x0, x1 로드 후 동일 가중치로 `[dh][dw]`, `[dh][dw+1]` 누적. `tw` 홀수 시 마지막 한 칸은 단일 로드.
+  - **일반 경로 (tile_is_safe)**: `kw` 루프를 2씩 언롤. 4바이트 정렬 시 x 2개 로드 후 해당 kw, kw+1 가중치와 누적. `k_w` 홀수 시 나머지 1개는 기존처럼 단일 로드.
+  - 정렬이 아니면 int16 두 번 읽기로 폴백. 패딩/경계 경로는 변경 없음.
 - **내부**
   - 누산기: `int32_t`. `acc = bias_or_null[oc]` 초기화 후 위 packed 4-way 누적.
   - **Bias는 multiplier 연산 전에** 더해짐.
@@ -165,9 +170,11 @@ W8A16 Conv 가중치는 로드 직후 **모든** 4D INT8 텐서에 대해 repack
 
 ## 6. main.c — W8A16 추론 흐름
 
-- **조건**: `#ifdef USE_W8A16` 구간. `yolov5n_inference_w8a16(img, weights, p3_out, p4_out, p5_out, &cy_backbone, &cy_neck, &cy_head)`.
-- **입력 양자화**: 전처리된 float 이미지 `img->data[]`를 `v = img->data[i] * 1024` 후 clamp하여 `int16_t x0[]`에 저장 (Q6.10).
-- **메모리**: 모든 중간 피처맵은 `feature_pool_scratch_alloc`으로 할당. `feature_pool_scratch_reset()`을 추론 시작 시 한 번 호출.
+- **조건**: `#ifdef USE_W8A16` 구간. `yolov5n_inference_w8a16(img, weights, p3_out, p4_out, p5_out, &cy_..., x0_a16_zero_copy)`.
+- **입력 (zero-copy a16 지원)**  
+  - **BARE_METAL**: DDR에 `preprocessed_image_a16.bin`(24B 헤더 + int16 Q6.10)을 넣고, `image_init_from_memory_a16(IMAGE_DDR_BASE, IMAGE_A16_DDR_SIZE, &img)`로 헤더만 파싱. L0 입력은 **복사 없이** `(int16_t*)(IMAGE_DDR_BASE + IMAGE_HEADER_SIZE)`를 `x0_a16_zero_copy`로 전달.  
+  - **호스트**: `image_load_from_bin_a16("data/input/preprocessed_image_a16.bin", &img, &a16_file_buf)`로 로드 후 `(int16_t*)((char*)a16_file_buf + 24)`를 전달. `x0_a16_zero_copy == NULL`이면 기존처럼 float `img->data`를 Q6.10으로 변환하여 사용.
+- **메모리**: 모든 중간 피처맵은 `feature_pool_scratch_alloc`으로 할당. `feature_pool_scratch_reset()`을 추론 시작 시 한 번 호출. **BARE_METAL**에서는 p3/p4/p5 출력 버퍼를 힙이 아닌 **DETECT_HEAD_BASE** 고정 DDR 사용(`p3 = (float*)DETECT_HEAD_BASE`, `p4 = p3 + (DETECT_C_OUT*80*80)`, `p5 = p4 + (DETECT_C_OUT*40*40)`).
 - **레이어 순서** (요약):
   - L0: Conv 6×6 s2 → l0
   - L1: Conv 3×3 s2 → l1
@@ -212,7 +219,16 @@ W8A16 Conv 가중치는 로드 직후 **모든** 4D INT8 텐서에 대해 repack
   + operations: `bottleneck_w8a16.c concat_w8a16.c conv2d_w8a16.c maxpool2d_w8a16.c silu_w8a16.c upsample_w8a16.c`  
   + utils: `feature_pool.c image_loader.c weights_loader.c timing.c uart_dump.c`
 - **가중치 파일**: `assets/weights_w8.bin` (INT8 + per-tensor scale).
-- **실행**: `./run_compare_host.sh w8a16` 또는 위 소스/옵션으로 직접 gcc.
+- **실행**: `./run_compare_host.sh w8a16` 또는 Windows `build_host.bat w8a16` 후 `.\main.exe`.
+
+### 8.1 BARE_METAL (Vitis) — 플랫폼 설정
+
+- **platform_config.h** (W8A16 관련):  
+  - `IMAGE_A16_DDR_SIZE` = 24 + 3×640×640×2 (preprocessed_image_a16.bin 크기).  
+  - `WEIGHTS_W8_DDR_SIZE` = 8MB (가중치 파일 여유).  
+  - `FEATURE_POOL_SIZE`: **USE_W8A16 시 48MB** (스크래치 합계가 32MB 초과하므로). 그 외 32MB.
+- **이미지 로드**: `image_init_from_memory_a16(IMAGE_DDR_BASE, IMAGE_A16_DDR_SIZE, &img)` — 헤더만 파싱, payload는 zero-copy.
+- **가중치 로드 실패 시**: 첫 워드(0x88000000)를 로그해 DDR 미로드 여부 확인. `num_tensors` 0 또는 >512면 파싱 실패.
 
 ---
 
@@ -221,8 +237,8 @@ W8A16 Conv 가중치는 로드 직후 **모든** 4D INT8 텐서에 대해 repack
 | 파일 | 역할 |
 |------|------|
 | `types_w8a16.h` | Q6.10 상수·타입·float↔Q6.10 변환 |
-| `main.c` (USE_W8A16) | scale_to_mult, w8a16_bias_convert, 입력 Q6.10 변환, L0–L24 호출, Detect 출력 /1024 → float |
-| `weights_loader.c,h` | weights_w8.bin 로드, get_tensor_for_conv(Scale_W 반환), get_tensor_data(bias). **4D INT8 repack**: [OC,IC,KH,KW]→[OC_padded/4,IC,KH,KW] uint32_t, 0 패딩, 4바이트 정렬 할당. |
+| `main.c` (USE_W8A16) | scale_to_mult, w8a16_bias_convert, zero-copy a16 또는 float→Q6.10 변환, L0–L24 호출, BARE_METAL 시 p3/p4/p5=DETECT_HEAD_BASE, Detect 출력 /1024 → float |
+| `weights_loader.c,h` | weights_w8.bin 로드, get_tensor_for_conv(Scale_W 반환), get_tensor_data(bias). **4D INT8 repack**: [OC,IC,KH,KW]→[OC_padded/4,IC,KH,KW] uint32_t, 0 패딩, 4바이트 정렬 할당. 파싱 시 num_tensors 0 또는 >512면 실패. BARE_METAL 로드 실패 시 첫 워드(0x88000000) 디버그 로그. |
 | `conv2d_w8a16.c,h` | int16 in/out, **packed** w(uint32_t 단위 4-way 로드·누산), int32 acc+bias, (acc*mult+32768)>>16 → int16 |
 | `silu_w8a16.c` + `silu_lut_data.h` | LUT 기반 SiLU Q6.10→Q6.10 |
 | `conv_w8a16.c,h` | conv2d + silu, multiplier/bias 인자 전달 |
@@ -231,6 +247,8 @@ W8A16 Conv 가중치는 로드 직후 **모든** 4D INT8 텐서에 대해 repack
 | `detect_w8a16.c,h` | 로더+이름 API, 내부 Scale_W/mult/bias, 3× 1×1 Conv |
 | `bottleneck_w8a16.c,h` | Conv1×1–SiLU–Conv3×3–SiLU (+shortcut), C3에서만 호출 |
 | `concat_w8a16.c,h`, `maxpool2d_w8a16.c,h`, `upsample_w8a16.c,h` | Q6.10 유지 연산 |
+| `image_loader.c,h` | `image_init_from_memory_a16` (DDR 24B 헤더만 파싱), `image_load_from_bin_a16` (호스트 a16 파일 로드, 버퍼 반환) |
+| `platform_config.h` | `IMAGE_A16_DDR_SIZE`, W8A16 시 `FEATURE_POOL_SIZE` 48MB, `WEIGHTS_W8_DDR_SIZE` 8MB |
 | `gen_silu_lut.py` | SiLU LUT C 헤더 생성 |
 
 이 문서는 위 구조와 수식에 맞춰 현재 코드베이스가 어떻게 동작하는지만 기술한 것이다.

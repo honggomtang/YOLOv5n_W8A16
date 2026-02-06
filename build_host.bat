@@ -17,13 +17,11 @@ set INC=-I. -I%CSRC%
 set CFLAGS=-std=c99 -O2 -lm
 
 if /i "%1"=="w8a16" (
-  set "CFLAGS=%CFLAGS% -DUSE_W8A16 -DUSE_WEIGHTS_W8"
   echo Building main.exe [W8A16] ...
-  gcc -o main.exe %CSRC%\main.c ^
+  gcc -DUSE_W8A16 -DUSE_WEIGHTS_W8 %INC% -std=c99 -O2 -lm -o main.exe %CSRC%\main.c ^
     %CSRC%\blocks\conv_w8a16.c %CSRC%\blocks\c3_w8a16.c %CSRC%\blocks\decode.c %CSRC%\blocks\detect_w8a16.c %CSRC%\blocks\nms.c %CSRC%\blocks\sppf_w8a16.c ^
     %CSRC%\operations\bottleneck_w8a16.c %CSRC%\operations\concat_w8a16.c %CSRC%\operations\conv2d_w8a16.c %CSRC%\operations\maxpool2d_w8a16.c %CSRC%\operations\silu_w8a16.c %CSRC%\operations\upsample_w8a16.c ^
-    %CSRC%\utils\feature_pool.c %CSRC%\utils\image_loader.c %CSRC%\utils\weights_loader.c %CSRC%\utils\timing.c %CSRC%\utils\uart_dump.c ^
-    %INC% %CFLAGS%
+    %CSRC%\utils\feature_pool.c %CSRC%\utils\image_loader.c %CSRC%\utils\weights_loader.c %CSRC%\utils\timing.c %CSRC%\utils\uart_dump.c
 ) else if /i "%1"=="w8" (
   set "CFLAGS=%CFLAGS% -DUSE_WEIGHTS_W8"
   echo Building main.exe [W8A32] ...

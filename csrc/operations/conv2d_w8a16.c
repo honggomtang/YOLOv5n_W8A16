@@ -72,18 +72,41 @@ void conv2d_nchw_w8a16(
                             const int16_t* x_ch = x + (ni * c_in + ic) * x_c_stride;
                             for (int32_t dh = 0; dh < th; dh++) {
                                 const int32_t oh = oh0 + dh;
-                                for (int32_t dw = 0; dw < tw; dw++) {
-                                    int32_t x_val = (int32_t)x_ch[oh * x_h_stride + ow0 + dw];
+                                const int16_t* x_row = x_ch + oh * x_h_stride + ow0;
+                                /* dw를 2씩 증가: uint32_t로 2개(x0,x1) 읽어 4-packed 가중치와 연산. 주소 4바이트 정렬일 때만 패어 로드. */
+                                for (int32_t dw = 0; dw < tw; dw += 2) {
+                                    int32_t x0, x1;
+                                    const int use_pair = (dw + 1 < tw);
+                                    if (use_pair) {
+                                        uintptr_t addr = (uintptr_t)(const void*)(x_row + dw);
+                                        if ((addr & 3u) == 0u) {
+                                            uint32_t pair = *(const uint32_t*)(const void*)addr;
+                                            x0 = (int32_t)(int16_t)(pair & 0xFFFFu);
+                                            x1 = (int32_t)(int16_t)(pair >> 16);
+                                        } else {
+                                            x0 = (int32_t)x_row[dw];
+                                            x1 = (int32_t)x_row[dw + 1];
+                                        }
+                                    } else {
+                                        x0 = (int32_t)x_row[dw];
+                                        x1 = 0;
+                                    }
                                     for (int32_t b4 = 0; b4 < n_oc; b4 += 4) {
                                         uint32_t p = w_p[(oc0 / 4 + b4 / 4) * packed_oc_stride + ic * packed_ic_stride];
                                         int32_t w0 = (int32_t)(int8_t)(p & 0xFF);
                                         int32_t w1 = (int32_t)(int8_t)((p >> 8) & 0xFF);
                                         int32_t w2 = (int32_t)(int8_t)((p >> 16) & 0xFF);
                                         int32_t w3 = (int32_t)(int8_t)((p >> 24) & 0xFF);
-                                        conv2d_acc_int32_w8a16[dh][dw][b4] += x_val * w0;
-                                        if (b4 + 1 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 1] += x_val * w1;
-                                        if (b4 + 2 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 2] += x_val * w2;
-                                        if (b4 + 3 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 3] += x_val * w3;
+                                        conv2d_acc_int32_w8a16[dh][dw][b4] += x0 * w0;
+                                        if (b4 + 1 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 1] += x0 * w1;
+                                        if (b4 + 2 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 2] += x0 * w2;
+                                        if (b4 + 3 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 3] += x0 * w3;
+                                        if (use_pair) {
+                                            conv2d_acc_int32_w8a16[dh][dw + 1][b4] += x1 * w0;
+                                            if (b4 + 1 < n_oc) conv2d_acc_int32_w8a16[dh][dw + 1][b4 + 1] += x1 * w1;
+                                            if (b4 + 2 < n_oc) conv2d_acc_int32_w8a16[dh][dw + 1][b4 + 2] += x1 * w2;
+                                            if (b4 + 3 < n_oc) conv2d_acc_int32_w8a16[dh][dw + 1][b4 + 3] += x1 * w3;
+                                        }
                                     }
                                 }
                             }
@@ -144,7 +167,40 @@ void conv2d_nchw_w8a16(
                                         const int16_t* x_base = x + (ni * c_in + ic) * x_c_stride + ih0 * x_h_stride + iw0;
                                         for (int32_t kh = 0; kh < k_h; kh++) {
                                             const int16_t* x_row = x_base + kh * x_h_stride;
-                                            for (int32_t kw = 0; kw < k_w; kw++) {
+                                            /* kw 루프: 가능하면 uint32_t로 2개 읽어 연산 (정렬/홀수 처리) */
+                                            int32_t kw = 0;
+                                            for (; kw + 1 < k_w; kw += 2) {
+                                                uintptr_t addr = (uintptr_t)(const void*)x_row;
+                                                int32_t x0, x1;
+                                                if ((addr & 3u) == 0u) {
+                                                    uint32_t pair = *(const uint32_t*)(const void*)x_row;
+                                                    x0 = (int32_t)(int16_t)(pair & 0xFFFFu);
+                                                    x1 = (int32_t)(int16_t)(pair >> 16);
+                                                } else {
+                                                    x0 = (int32_t)x_row[0];
+                                                    x1 = (int32_t)x_row[1];
+                                                }
+                                                x_row += 2;
+                                                uint32_t p0 = w_p[og * packed_oc_stride + ic * packed_ic_stride + kh * k_w + kw];
+                                                uint32_t p1 = w_p[og * packed_oc_stride + ic * packed_ic_stride + kh * k_w + kw + 1];
+                                                int32_t w0 = (int32_t)(int8_t)(p0 & 0xFF);
+                                                int32_t w1 = (int32_t)(int8_t)((p0 >> 8) & 0xFF);
+                                                int32_t w2 = (int32_t)(int8_t)((p0 >> 16) & 0xFF);
+                                                int32_t w3 = (int32_t)(int8_t)((p0 >> 24) & 0xFF);
+                                                conv2d_acc_int32_w8a16[dh][dw][b4] += x0 * w0;
+                                                if (b4 + 1 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 1] += x0 * w1;
+                                                if (b4 + 2 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 2] += x0 * w2;
+                                                if (b4 + 3 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 3] += x0 * w3;
+                                                w0 = (int32_t)(int8_t)(p1 & 0xFF);
+                                                w1 = (int32_t)(int8_t)((p1 >> 8) & 0xFF);
+                                                w2 = (int32_t)(int8_t)((p1 >> 16) & 0xFF);
+                                                w3 = (int32_t)(int8_t)((p1 >> 24) & 0xFF);
+                                                conv2d_acc_int32_w8a16[dh][dw][b4] += x1 * w0;
+                                                if (b4 + 1 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 1] += x1 * w1;
+                                                if (b4 + 2 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 2] += x1 * w2;
+                                                if (b4 + 3 < n_oc) conv2d_acc_int32_w8a16[dh][dw][b4 + 3] += x1 * w3;
+                                            }
+                                            for (; kw < k_w; kw++) {
                                                 int32_t x_val = (int32_t)(*x_row++);
                                                 uint32_t p = w_p[og * packed_oc_stride + ic * packed_ic_stride + kh * k_w + kw];
                                                 int32_t w0 = (int32_t)(int8_t)(p & 0xFF);

@@ -106,14 +106,23 @@ W8A16 빌드 시 소스: `csrc/main.c` + `csrc/blocks/conv_w8a16.c c3_w8a16.c de
 ./main
 ```
 
-- 입력: `data/input/preprocessed_image.bin`
+- 입력: `data/input/preprocessed_image.bin` (W8A32/FP32) 또는 W8A16 호스트 시 `preprocessed_image_a16.bin` (생성: `tools/preprocess_image_a16.py --from-float data/input/preprocessed_image.bin --out data/input/preprocessed_image_a16.bin`)
 - 출력: `data/output/detections.bin`, `detections.txt`
 - 콘솔: 레이어별 시간 `L0 ... ms (0x....)`, 마지막에 `[time] backbone=... neck=... head=...` 요약
+
+**Windows (PowerShell)**  
+- 빌드: `build_host.bat w8a16`  
+- 실행: `.\main.exe` (현재 디렉터리 실행 파일은 `.\` 필요)
 
 ### Bare-metal (Vitis)
 
 - `-DBARE_METAL`, DDR에서 이미지·가중치 로드, UART로 결과 덤프.  
-- 상세: [docs/VITIS_BUILD.md](docs/VITIS_BUILD.md), [docs/DATA_CACHE_USAGE.md](docs/DATA_CACHE_USAGE.md)
+- **W8A16 시 DDR 로드**  
+  - 이미지: `preprocessed_image_a16.bin` → **0x8F000000** (24B 헤더 + int16 Q6.10, zero-copy L0 입력).  
+  - 가중치: `weights_w8.bin` → **0x88000000**.  
+  - 피처 풀: **48MB** (0x82000000~). Detect 출력 버퍼(p3/p4/p5)는 **DETECT_HEAD_BASE** 고정 영역 사용(힙 미사용).  
+- XSCT 예: `dow -data "path/preprocessed_image_a16.bin" 0x8F000000` → `dow -data "path/weights_w8.bin" 0x88000000` → `dow path/app.elf` → `con`.  
+- 상세: [docs/VITIS_BUILD.md](docs/VITIS_BUILD.md), [docs/W8A16_IMPLEMENTATION.md](docs/W8A16_IMPLEMENTATION.md), [docs/DATA_CACHE_USAGE.md](docs/DATA_CACHE_USAGE.md)
 
 ## 단계별 시간 측정
 
@@ -127,6 +136,8 @@ W8A16 빌드 시 소스: `csrc/main.c` + `csrc/blocks/conv_w8a16.c c3_w8a16.c de
 - **NCHW**, **Anchor-based**: P3/P4/P5 각 3앵커, 255ch = 3×85.
 - **HW 출력**: 12바이트/검출 (decode.h `hw_detection_t`).
 - **W8A16 가중치 4-way pack**: Conv 가중치 [OC,IC,KH,KW]를 로드 후 [OC_padded/4, IC, KH, KW]로 repack(같은 ic,kh,kw에 대한 OC 4개를 uint32_t 하나로). OC가 4의 배수가 아니면(예: Detect 255) 0 패딩. 패킹 버퍼는 4바이트 정렬 할당(aligned_alloc 또는 BARE_METAL용 정렬 할당자 권장). conv2d는 uint32_t 단위 1회 로드로 4채널 누산.
+- **W8A16 입력 zero-copy**: BARE_METAL에서는 DDR에 `preprocessed_image_a16.bin`(24B 헤더 + int16)을 넣고, L0 입력을 복사 없이 해당 주소로 사용. 호스트는 `preprocessed_image_a16.bin` 파일 로드 후 포인터 전달.
+- **W8A16 Conv2D 32비트 로드**: 활성화(x)를 가능한 경우 `uint32_t`로 2개씩 읽어 32비트 아키텍처에서 로드 효율 향상(1x1 경로 dw 2씩 언롤, 일반 경로 kw 2씩 언롤, 정렬/홀수 예외 처리).
 
 ## 문서
 

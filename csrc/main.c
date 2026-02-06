@@ -8,14 +8,16 @@
 
 #include "utils/weights_loader.h"
 #include "utils/image_loader.h"
+#ifndef USE_W8A16
 #include "blocks/conv_w8a32.h"
 #include "blocks/c3_w8a32.h"
 #include "blocks/sppf_w8a32.h"
 #include "blocks/detect_w8a32.h"
-#include "blocks/decode.h"
-#include "blocks/nms.h"
 #include "operations/upsample_w8a32.h"
 #include "operations/concat_w8a32.h"
+#endif
+#include "blocks/decode.h"
+#include "blocks/nms.h"
 #include "utils/feature_pool.h"
 #include "utils/mcycle.h"
 #include "utils/timing.h"
@@ -128,7 +130,8 @@ static int yolov5n_inference_w8a16(
     const preprocessed_image_t* img,
     weights_loader_t* weights,
     float* p3_out, float* p4_out, float* p5_out,
-    uint64_t* out_cycles_backbone, uint64_t* out_cycles_neck, uint64_t* out_cycles_head)
+    uint64_t* out_cycles_backbone, uint64_t* out_cycles_neck, uint64_t* out_cycles_head,
+    int16_t* x0_a16_zero_copy)
 {
 #define W_W16(name) weights_get_tensor_data(weights, name)
 #define W_CONV_W16(name, s, i) weights_get_tensor_for_conv(weights, name, s, i)
@@ -144,15 +147,20 @@ static int yolov5n_inference_w8a16(
     t_stage_start = timer_read64();
     static int32_t bias_buf[256];
 
-    /* 입력 이미지 float -> Q6.10 (int16) */
+    /* L0 입력: zero-copy a16 포인터가 있으면 그대로 사용, 없으면 float 이미지를 Q6.10으로 변환 */
     const int in_elems = 1 * 3 * 640 * 640;
-    int16_t* x0 = (int16_t*)feature_pool_scratch_alloc((size_t)in_elems * sizeof(int16_t));
-    if (!x0) { YOLO_LOG("ERROR: W8A16 scratch alloc input failed\n"); return 1; }
-    for (int i = 0; i < in_elems; i++) {
-        float v = img->data[i] * (float)Q6_10_SCALE;
-        if (v > 32767.f) v = 32767.f;
-        if (v < -32768.f) v = -32768.f;
-        x0[i] = (int16_t)(int32_t)v;
+    int16_t* x0;
+    if (x0_a16_zero_copy) {
+        x0 = x0_a16_zero_copy;
+    } else {
+        x0 = (int16_t*)feature_pool_scratch_alloc((size_t)in_elems * sizeof(int16_t));
+        if (!x0) { YOLO_LOG("ERROR: W8A16 scratch alloc input failed\n"); return 1; }
+        for (int i = 0; i < in_elems; i++) {
+            float v = img->data[i] * (float)Q6_10_SCALE;
+            if (v > 32767.f) v = 32767.f;
+            if (v < -32768.f) v = -32768.f;
+            x0[i] = (int16_t)(int32_t)v;
+        }
     }
 
     /* L0: Conv 6x6 s2 */
@@ -541,24 +549,51 @@ int main(int argc, char* argv[]) {
     
     preprocessed_image_t img;
     weights_loader_t weights;
+#ifdef USE_W8A16
+#ifndef BARE_METAL
+    void* a16_file_buf = NULL;
+    int16_t* x0_a16_ptr = NULL;
+#endif
+#endif
 
 #ifdef BARE_METAL
     Xil_DCacheInvalidateRange((uintptr_t)WEIGHTS_DDR_BASE, (unsigned int)WEIGHTS_DDR_SIZE);
+#ifdef USE_W8A16
+    Xil_DCacheInvalidateRange((uintptr_t)IMAGE_DDR_BASE, (unsigned int)IMAGE_A16_DDR_SIZE);
+#else
     Xil_DCacheInvalidateRange((uintptr_t)IMAGE_DDR_BASE, (unsigned int)IMAGE_DDR_SIZE);
+#endif
     Xil_DCacheInvalidateRange((uintptr_t)FEATURE_POOL_BASE, (unsigned int)FEATURE_POOL_SIZE);
     Xil_DCacheInvalidateRange((uintptr_t)DETECT_HEAD_BASE, (unsigned int)DETECT_HEAD_SIZE);
     Xil_DCacheEnable();
 
+#ifdef USE_W8A16
+    /* W8A16: preprocessed_image_a16.bin (24B 헤더 + int16) zero-copy. 헤더만 파싱. */
+    YOLO_LOG("Loading image (a16) from DDR 0x%08X...\n", (unsigned int)IMAGE_DDR_BASE);
+    if (image_init_from_memory_a16((uintptr_t)IMAGE_DDR_BASE, (size_t)IMAGE_A16_DDR_SIZE, &img) != 0) {
+        YOLO_LOG("ERROR: Failed to load image (a16) header from DDR\n");
+        return 1;
+    }
+#else
     YOLO_LOG("Loading image from DDR 0x%08X...\n", (unsigned int)IMAGE_DDR_BASE);
     if (image_init_from_memory((uintptr_t)IMAGE_DDR_BASE, (size_t)IMAGE_DDR_SIZE, &img) != 0) {
         YOLO_LOG("ERROR: Failed to load image from DDR\n");
         return 1;
     }
     img.data = (float*)((uintptr_t)IMAGE_DDR_BASE + (uintptr_t)IMAGE_HEADER_SIZE);
+#endif
 #ifdef USE_WEIGHTS_W8
-    YOLO_LOG("Loading weights (W8) from DDR 0x%08X...\n", (unsigned int)WEIGHTS_W8_DDR_BASE);
+    YOLO_LOG("Loading weights (W8) from DDR 0x%08X (size %u bytes)...\n",
+             (unsigned int)WEIGHTS_W8_DDR_BASE, (unsigned)WEIGHTS_W8_DDR_SIZE);
     if (weights_init_from_memory_w8((uintptr_t)WEIGHTS_W8_DDR_BASE, (size_t)WEIGHTS_W8_DDR_SIZE, &weights) != 0) {
         YOLO_LOG("ERROR: Failed to load weights (W8) from DDR\n");
+#ifdef BARE_METAL
+        {
+            const uint32_t* first = (const uint32_t*)(uintptr_t)WEIGHTS_W8_DDR_BASE;
+            YOLO_LOG("  Debug: first word at 0x88000000 = 0x%08X (expected num_tensors ~121)\n", (unsigned)*first);
+            YOLO_LOG("  Check: dow -data <path>/weights_w8.bin 0x88000000 before running ELF\n");
+        }
+#endif
         image_free(&img);
         return 1;
     }
@@ -580,10 +615,18 @@ int main(int argc, char* argv[]) {
         }
     }
 #else
+#ifdef USE_W8A16
+    if (image_load_from_bin_a16("data/input/preprocessed_image_a16.bin", &img, &a16_file_buf) != 0) {
+        fprintf(stderr, "Failed to load image (a16)\n");
+        return 1;
+    }
+    x0_a16_ptr = (int16_t*)((char*)a16_file_buf + 24);
+#else
     if (image_load_from_bin("data/input/preprocessed_image.bin", &img) != 0) {
         fprintf(stderr, "Failed to load image\n");
         return 1;
     }
+#endif
 #ifdef USE_WEIGHTS_W8
     if (weights_load_from_file_w8("assets/weights_w8.bin", &weights) != 0) {
         fprintf(stderr, "Failed to load weights (W8)\n");
@@ -649,7 +692,11 @@ int main(int argc, char* argv[]) {
 } while(0)
 
 #ifdef BARE_METAL
+#ifdef USE_W8A16
+    Xil_DCacheInvalidateRange((uintptr_t)IMAGE_DDR_BASE, (unsigned int)IMAGE_A16_DDR_SIZE);
+#else
     Xil_DCacheInvalidateRange((uintptr_t)IMAGE_DDR_BASE, (unsigned int)IMAGE_DDR_SIZE);
+#endif
     Xil_DCacheInvalidateRange((uintptr_t)WEIGHTS_DDR_BASE, (unsigned int)WEIGHTS_DDR_SIZE);
     if (YOLO_DEBUG) {
         float img0 = img.data ? img.data[0] : 0.0f;
@@ -675,6 +722,12 @@ int main(int argc, char* argv[]) {
 
 #ifdef USE_W8A16
     YOLO_LOG("W8A16 path: scratch_reset + full pipeline -> float p3/p4/p5\n");
+#ifdef BARE_METAL
+    /* DDR 고정 영역 사용 (힙 부족 방지). W8A32와 동일한 DETECT_HEAD_BASE 레이아웃. */
+    p3 = (float*)(uintptr_t)DETECT_HEAD_BASE;
+    p4 = p3 + (DETECT_C_OUT * 80 * 80);
+    p5 = p4 + (DETECT_C_OUT * 40 * 40);
+#else
     p3 = (float*)malloc(sz_p3);
     p4 = (float*)malloc(sz_p4);
     p5 = (float*)malloc(sz_p5);
@@ -686,15 +739,29 @@ int main(int argc, char* argv[]) {
         image_free(&img);
         return 1;
     }
+#endif
     if (yolov5n_inference_w8a16(&img, &weights, p3, p4, p5,
-            &cycles_backbone, &cycles_neck, &cycles_head) != 0) {
+            &cycles_backbone, &cycles_neck, &cycles_head,
+#ifdef BARE_METAL
+            (int16_t*)((uintptr_t)IMAGE_DDR_BASE + (uintptr_t)IMAGE_HEADER_SIZE)
+#else
+            x0_a16_ptr
+#endif
+    ) != 0) {
         YOLO_LOG("ERROR: W8A16 inference failed\n");
+#ifndef BARE_METAL
         free(p3); free(p4); free(p5);
+        if (a16_file_buf) free(a16_file_buf);
+#endif
         feature_pool_reset();
         weights_free(&weights);
         image_free(&img);
         return 1;
     }
+#ifndef BARE_METAL
+    if (a16_file_buf) { free(a16_file_buf); a16_file_buf = NULL; }
+    free(p3); free(p4); free(p5);
+#endif
 #else
     YOLO_LOG("Backbone: ");
 
