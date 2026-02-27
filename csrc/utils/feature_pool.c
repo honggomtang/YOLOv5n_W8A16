@@ -1,6 +1,3 @@
-/**
- * 피처맵 풀: First-fit 할당자 (버퍼 재사용)
- */
 #include "feature_pool.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -29,7 +26,6 @@ static uint8_t* host_pool;
 
 static size_t free_head;
 
-/* 스크래치패드: 포인터 하나만 밀어서 할당. free 없음, 파편화 없음. */
 static size_t scratch_offset;
 
 static inline size_t align_up(size_t x, size_t a) {
@@ -41,9 +37,9 @@ void feature_pool_init(void) {
     pool_base = (uint8_t*)FEATURE_POOL_BASE;
     pool_size = FEATURE_POOL_SIZE;
 #else
-    pool_size = 22u * 1024u * 1024u;  /* 호스트: 22MB (W8A32) */
+    pool_size = 22u * 1024u * 1024u;
 #ifdef USE_W8A16
-    pool_size = 48u * 1024u * 1024u;  /* W8A16 scratch: 모든 중간 텐서 연속 할당 (~24MB+ 여유) */
+    pool_size = 48u * 1024u * 1024u;
 #endif
     host_pool = (uint8_t*)malloc(pool_size);
     pool_base = host_pool;

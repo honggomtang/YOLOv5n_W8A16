@@ -9,7 +9,6 @@ void concat_nchw_f32_w8a16(
     int32_t n, int32_t h, int32_t w,
     float* y);
 
-/* W8A16 전용: 입출력 모두 int16_t (Q6.10). 합쳐지는 두 텐서는 반드시 동일 Q6.10 스케일이어야 함. */
 void concat_nchw_w8a16(
     const int16_t* x1, int32_t c1,
     const int16_t* x2, int32_t c2,
@@ -24,7 +23,6 @@ void concat4_nchw_f32_w8a16(
     int32_t n, int32_t h, int32_t w,
     float* y);
 
-/* W8A16 전용: 4개 텐서 concat. 네 텐서 모두 동일 Q6.10 스케일이어야 함. */
 void concat4_nchw_w8a16(
     const int16_t* x0, int32_t c0,
     const int16_t* x1, int32_t c1,

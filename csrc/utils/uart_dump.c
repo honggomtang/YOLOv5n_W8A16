@@ -1,4 +1,3 @@
-/** UART로 검출 결과 전송 (BARE_METAL). 프로토콜: YOLO\\n, count hex, 12*count bytes hex */
 #ifdef BARE_METAL
 
 #include "uart_dump.h"

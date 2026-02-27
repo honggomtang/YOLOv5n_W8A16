@@ -1,4 +1,3 @@
-/** UART 검출 결과 전송 (BARE_METAL). PC 스크립트로 시리얼 수신 → detections.bin */
 #ifndef UART_DUMP_H
 #define UART_DUMP_H
 

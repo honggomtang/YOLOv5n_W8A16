@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""PyTorch .pt → C weights.bin (Fused 모델 지원)."""
+"""PyTorch .pt → C weights.bin (Fused 모델 지원).
+   옵션 --acc-repack: Conv 가중치를 가속기 레이아웃 [OC/32][IC][KH][KW][8클러스터][4채널] 스트림 순서로
+   추가 출력 (weights_acc_repack.bin). 하드웨어: rd_w_addr = kw + kh*K + ic*K*K, 매 주소마다 8워드.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +11,43 @@ import pickle
 import sys
 import types
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 import struct
 import numpy as np
 import torch
+
+NUM_CLUSTERS = 8
+NUM_PE = 32
+
+
+def repack_conv_weight_for_acc(
+    w: np.ndarray,
+    oc: int,
+    ic: int,
+    kh: int,
+    kw: int,
+) -> bytes:
+    """[OC, IC, KH, KW] → 가속기 스트림 순서: rd_w_addr = kw + kh*K + ic*K*K (RTL과 동일).
+    주소마다 8워드(클러스터 0~7), 워드당 4바이트(PE 4개 int8). OC는 32 단위로 패딩.
+    """
+    if w.dtype == np.float32:
+        w = np.clip(np.round(w).astype(np.int32), -128, 127).astype(np.int8)
+    out = []
+    for oc_block in range((oc + NUM_PE - 1) // NUM_PE):
+        oc0 = oc_block * NUM_PE
+        for ic_ in range(ic):
+            for kh_ in range(kh):
+                for kw_ in range(kw):
+                    for c in range(NUM_CLUSTERS):
+                        word = 0
+                        for pe in range(4):
+                            oc_idx = oc0 + c * 4 + pe
+                            if oc_idx < oc:
+                                # w shape (OC, IC, KH, KW)
+                                val = int(w[oc_idx, ic_, kh_, kw_]) & 0xFF
+                                word |= val << (pe * 8)
+                        out.append(struct.pack("<I", word))
+    return b"".join(out)
 
 _YOLOv5ModelStub = type("Model", (torch.nn.Module,), {})
 
@@ -85,6 +121,11 @@ def main() -> int:
         help="Anchor-based (Standard YOLOv5n). torch.hub ultralytics/yolov5 custom. "
         "Needs network. Use for detections_ref match (desktop detect.py).",
     )
+    ap.add_argument(
+        "--acc-repack",
+        action="store_true",
+        help="Conv 가중치를 가속기 스트림 레이아웃으로 추가 출력 (weights_acc_repack.bin).",
+    )
     args = ap.parse_args()
 
     pt_path = Path(args.pt).expanduser().resolve()
@@ -149,6 +190,8 @@ def main() -> int:
     # 바이너리 파일로 저장
     out_path = Path(args.out).expanduser().resolve()
     
+    acc_repack_chunks: list[Tuple[str, bytes]] = []
+    
     with out_path.open("wb") as f:
         # 헤더: 텐서 개수 (4 bytes)
         num_tensors = len(state_dict)
@@ -176,9 +219,28 @@ def main() -> int:
             # 텐서 데이터 (float32)
             data = tensor.cpu().numpy().astype(np.float32)
             f.write(data.tobytes())
+            
+            # 가속기 재배열: .conv.weight 이고 4D (OC, IC, KH, KW) 인 경우
+            if args.acc_repack and key.endswith(".conv.weight") and len(shape) == 4:
+                oc, ic, kh, kw = int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3])
+                repacked = repack_conv_weight_for_acc(data, oc, ic, kh, kw)
+                acc_repack_chunks.append((key, repacked))
     
     print(f"Wrote {num_tensors} tensors to {out_path}")
     print(f"File size: {out_path.stat().st_size / (1024*1024):.2f} MB")
+    
+    if args.acc_repack and acc_repack_chunks:
+        acc_path = out_path.parent / (out_path.stem + "_acc_repack.bin")
+        with acc_path.open("wb") as af:
+            af.write(struct.pack("I", len(acc_repack_chunks)))
+            for key, blob in acc_repack_chunks:
+                kb = key.encode("utf-8")
+                af.write(struct.pack("I", len(kb)))
+                af.write(kb)
+                af.write(struct.pack("I", len(blob)))
+                af.write(blob)
+        print(f"Wrote {len(acc_repack_chunks)} acc-repacked conv weights to {acc_path}")
+    
     return 0
 
 

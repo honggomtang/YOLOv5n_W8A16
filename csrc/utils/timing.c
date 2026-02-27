@@ -1,7 +1,3 @@
-/**
- * 연산별 시간 수집·출력 구현.
- * timer_read64/timer_delta64(mcycle.h) 사용. BARE_METAL에서는 정수 ms만 출력.
- */
 #include "timing.h"
 #include "mcycle.h"
 #include <string.h>
@@ -46,17 +42,27 @@ void yolo_timing_begin(const char* op) {
 }
 
 void yolo_timing_end(void) {
+    yolo_timing_end_with_op(NULL);
+}
+
+void yolo_timing_end_with_op(const char* op) {
     if (s_count >= YOLO_TIMING_ENTRIES) return;
     uint64_t delta = timer_delta64(s_start, timer_read64());
     s_entries[s_count].layer = s_current_layer;
-    (void)strncpy(s_entries[s_count].op, s_current_op, YOLO_TIMING_OP_MAX - 1);
-    s_entries[s_count].op[YOLO_TIMING_OP_MAX - 1] = '\0';
+    if (op && op[0]) {
+        size_t len = 0;
+        while (op[len] && len < (size_t)(YOLO_TIMING_OP_MAX - 1))
+            s_entries[s_count].op[len] = op[len], len++;
+        s_entries[s_count].op[len] = '\0';
+    } else {
+        (void)strncpy(s_entries[s_count].op, s_current_op, YOLO_TIMING_OP_MAX - 1);
+        s_entries[s_count].op[YOLO_TIMING_OP_MAX - 1] = '\0';
+    }
     s_entries[s_count].cycles = delta;
     s_count++;
 }
 
 void yolo_timing_print_layer_ops(int layer_id) {
-    /* cursor부터 layer_id에 해당하는 연속 구간을 한 줄로 출력 */
     int i = s_cursor;
     while (i < s_count && s_entries[i].layer != layer_id) i++;
     if (i >= s_count) { s_cursor = s_count; return; }

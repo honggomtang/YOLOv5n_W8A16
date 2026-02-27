@@ -1,13 +1,13 @@
 # YOLOv5n Pure C Implementation (W8A32 / W8A16)
 
-순수 C로 구현한 YOLOv5n(nano) 객체 탐지 추론 엔진. 외부 라이브러리 없이 동작하며, 호스트 빌드와 **Bare-metal(FPGA)** 빌드를 하나의 코드베이스로 지원한다.
+순수 C로 구현한 YOLOv5n(nano) 객체 탐지 추론 엔진. 외부 라이브러리 없이 동작하며, 호스트 빌드와 **Bare-metal(FPGA)** 빌드를 하나의 코드베이스로 지원한다. **W8A16 경로**는 Conv 하드웨어 가속기(RTL) 및 드라이버와 연동 가능하다.
 
 ## 목표
 
 - **최종**: MicroBlaze V(RISC-V) 등 FPGA에서 YOLOv5n 추론 실행
 - **제약**: OpenCV/OpenBLAS 등 미사용, 순수 C만 사용
 - **상태**: Python YOLOv5n과 동일한 추론 결과 (호스트·보드 검증 완료)
-- **구성**: **W8A32**(INT8 가중치 + FP32 활성화), **W8A16**(INT8 가중치 + INT16 Q6.10 활성화) 두 경로 지원. Decode/NMS는 공통(float 입력).
+- **구성**: **W8A32**(INT8 가중치 + FP32 활성화), **W8A16**(INT8 가중치 + INT16 Q6.10 활성화) 두 경로 지원. W8A16은 `-DUSE_CONV_ACC`로 Conv 하드웨어 가속 시도(제약 미충족 시 SW 폴백). Decode/NMS는 공통(float 입력).
 
 ## 폴더 구조
 
@@ -21,52 +21,45 @@ YOLOv5n_W8A16/
 ├── csrc/
 │   ├── main.c                  # 추론 파이프라인 (USE_W8A16 시 W8A16 경로)
 │   ├── platform_config.h       # BARE_METAL DDR 맵 / CPU_MHZ
-│   ├── types_w8a16.h          # W8A16 Q6.10 타입·헬퍼
-│   ├── types_w8a32.h          # W8A32 타입
+│   ├── types_w8a16.h, types_w8a32.h
+│   │
+│   ├── drivers/                # 하드웨어 가속기 드라이버 (USE_CONV_ACC)
+│   │   └── conv_acc_driver.c,h # Conv 가속기 GPIO/DMA 제어
 │   │
 │   ├── blocks/                 # 고수준 블록 (W8A32 / W8A16 분리)
 │   │   ├── conv_w8a32.c,h, conv_w8a16.c,h
 │   │   ├── c3_w8a32.c,h, c3_w8a16.c,h
 │   │   ├── sppf_w8a32.c,h, sppf_w8a16.c,h
 │   │   ├── detect_w8a32.c,h, detect_w8a16.c,h
-│   │   ├── decode.c,h          # 공통 (float 입력)
-│   │   └── nms.c,h             # 공통
+│   │   ├── decode.c,h, nms.c,h
 │   │
 │   ├── operations/             # 저수준 연산 (W8A32 / W8A16 분리)
 │   │   ├── conv2d_w8a32.c,h, conv2d_w8a16.c,h
-│   │   ├── silu_w8a32.c,h, silu_w8a16.c,h + silu_lut_data.h  # W8A16: LUT
-│   │   ├── bottleneck_w8a32.c,h, bottleneck_w8a16.c,h
-│   │   ├── concat_w8a32.c,h, concat_w8a16.c,h
-│   │   ├── maxpool2d_w8a32.c,h, maxpool2d_w8a16.c,h
-│   │   └── upsample_w8a32.c,h, upsample_w8a16.c,h
+│   │   ├── silu_w8a32.c,h, silu_w8a16.c,h + silu_lut_data.h
+│   │   ├── bottleneck, concat, maxpool2d, upsample
 │   │
 │   └── utils/
-│       ├── weights_loader.c,h  # weights.bin / weights_w8.bin, W8A16 시 4-way pack(repack)
-│       ├── image_loader.c,h
-│       ├── feature_pool.c,h    # scratch_alloc (W8A16 피처맵 풀)
-│       ├── mcycle.h            # 타이머 (mcycle / 호스트)
-│       ├── timing.c,h          # 레이어·연산별 시간
-│       └── uart_dump.c,h       # BARE_METAL UART 덤프
+│       ├── weights_loader.c,h, image_loader.c,h, feature_pool.c,h
+│       ├── mcycle.h, timing.c,h, uart_dump.c,h
 │
-├── data/
-│   ├── image/, input/, output/ # 입력·전처리·결과
-│   └── output/ref/             # Python 참조 결과
+├── vsrc/                       # Conv 가속기 RTL (Verilog)
+│   ├── conv_acc_top.v          # 탑 모듈
+│   ├── conv_acc_buffer.v       # 라인 버퍼
+│   ├── conv_acc_compute.v      # PE 클러스터 오케스트레이션
+│   ├── conv_acc_requant.v      # Requant
+│   ├── pe_cluster.v, pe_mac.v   # MAC 연산 유닛
+│   ├── tb_conv_acc.v           # 테스트벤치
+│   └── run_tb_conv_acc.bat     # iverilog 시뮬레이션
 │
+├── data/                       # 입력·전처리·결과
 ├── tools/
-│   ├── export_weights_to_bin.py
+│   ├── export_weights_to_bin.py, export_acc_repack_from_w8.py  # 가속기용 repack
 │   ├── preprocess_image_to_bin.py, preprocess_image_a16.py
-│   ├── gen_silu_lut.py         # W8A16 SiLU LUT 헤더 생성
-│   ├── run_python_yolov5n_fused.py, decode_detections.py
-│   ├── compare_fp32_w8.py, verify_weights_bin.py, reweight_align4.py
+│   ├── gen_silu_lut.py, run_python_yolov5n_fused.py
+│   ├── compare_fp32_w8.py, verify_weights_bin.py
 │   ├── recv_detections_uart.py, uart_to_detections_txt.py
-│   └── gen_test_vectors.py, compute_layer_multipliers.py, compute_layer_shifts.py
-│
-├── tests/                      # 단위 테스트 (test_*.c, test_vectors_*.h)
-├── docs/                       # 상세 문서
-│   ├── W8A16_IMPLEMENTATION.md # W8A16 구현 정리 (개념·코드)
-│   ├── W8A32_IMPLEMENTATION.md
-│   ├── CONV2D_OPTIMIZATION.md, DATA_CACHE_USAGE.md, VITIS_BUILD.md
-│   └── TESTING.md
+│   └── ...
+├── tests/                      # 단위 테스트
 ├── CHANGELOG.md
 └── README.md
 ```
@@ -89,6 +82,7 @@ YOLOv5n_W8A16/
 | W32A32 (FP32) | `-O2 -I. -Icsrc` | weights.bin |
 | W8A32 | `-O2 -DUSE_WEIGHTS_W8` | weights_w8.bin |
 | **W8A16** | `-O2 -DUSE_W8A16 -DUSE_WEIGHTS_W8` | weights_w8.bin |
+| **W8A16+Conv 가속** | `-O2 -DUSE_W8A16 -DUSE_WEIGHTS_W8 -DUSE_CONV_ACC` | weights_w8.bin (+conv_acc_driver.c) |
 
 **스크립트** (`run_compare_host.sh`)
 
@@ -98,7 +92,7 @@ YOLOv5n_W8A16/
 ./run_compare_host.sh w8a16     # W8A16만 빌드·실행
 ```
 
-W8A16 빌드 시 소스: `csrc/main.c` + `csrc/blocks/conv_w8a16.c c3_w8a16.c decode.c detect_w8a16.c nms.c sppf_w8a16.c` + `csrc/operations/bottleneck_w8a16.c concat_w8a16.c conv2d_w8a16.c maxpool2d_w8a16.c silu_w8a16.c upsample_w8a16.c` + `csrc/utils/feature_pool.c image_loader.c weights_loader.c timing.c uart_dump.c`
+W8A16 빌드 시 소스: `csrc/main.c` + `csrc/blocks/*` + `csrc/operations/*` + `csrc/utils/*`. Conv 가속 사용 시 `csrc/drivers/conv_acc_driver.c` 추가.
 
 **실행**
 
@@ -122,7 +116,7 @@ W8A16 빌드 시 소스: `csrc/main.c` + `csrc/blocks/conv_w8a16.c c3_w8a16.c de
   - 가중치: `weights_w8.bin` → **0x88000000**.  
   - 피처 풀: **48MB** (0x82000000~). Detect 출력 버퍼(p3/p4/p5)는 **DETECT_HEAD_BASE** 고정 영역 사용(힙 미사용).  
 - XSCT 예: `dow -data "path/preprocessed_image_a16.bin" 0x8F000000` → `dow -data "path/weights_w8.bin" 0x88000000` → `dow path/app.elf` → `con`.  
-- 상세: [docs/VITIS_BUILD.md](docs/VITIS_BUILD.md), [docs/W8A16_IMPLEMENTATION.md](docs/W8A16_IMPLEMENTATION.md), [docs/DATA_CACHE_USAGE.md](docs/DATA_CACHE_USAGE.md)
+- 상세: `platform_config.h`의 DDR 맵, `csrc/drivers/conv_acc_driver.h`의 GPIO 베이스 주소 참고.
 
 ## 단계별 시간 측정
 
@@ -135,16 +129,17 @@ W8A16 빌드 시 소스: `csrc/main.c` + `csrc/blocks/conv_w8a16.c c3_w8a16.c de
 - **Fused**: Conv+BN → Conv+Bias 흡수.
 - **NCHW**, **Anchor-based**: P3/P4/P5 각 3앵커, 255ch = 3×85.
 - **HW 출력**: 12바이트/검출 (decode.h `hw_detection_t`).
-- **W8A16 가중치 4-way pack**: Conv 가중치 [OC,IC,KH,KW]를 로드 후 [OC_padded/4, IC, KH, KW]로 repack(같은 ic,kh,kw에 대한 OC 4개를 uint32_t 하나로). OC가 4의 배수가 아니면(예: Detect 255) 0 패딩. 패킹 버퍼는 4바이트 정렬 할당(aligned_alloc 또는 BARE_METAL용 정렬 할당자 권장). conv2d는 uint32_t 단위 1회 로드로 4채널 누산.
-- **W8A16 입력 zero-copy**: BARE_METAL에서는 DDR에 `preprocessed_image_a16.bin`(24B 헤더 + int16)을 넣고, L0 입력을 복사 없이 해당 주소로 사용. 호스트는 `preprocessed_image_a16.bin` 파일 로드 후 포인터 전달.
-- **W8A16 Conv2D 32비트 로드**: 활성화(x)를 가능한 경우 `uint32_t`로 2개씩 읽어 32비트 아키텍처에서 로드 효율 향상(1x1 경로 dw 2씩 언롤, 일반 경로 kw 2씩 언롤, 정렬/홀수 예외 처리).
+- **W8A16 가중치 4-way pack**: Conv 가중치 [OC,IC,KH,KW]를 로드 후 [OC_padded/4, IC, KH, KW]로 repack. conv2d는 uint32_t 단위 1회 로드로 4채널 누산.
+- **W8A16 입력 zero-copy**: BARE_METAL에서는 DDR에 `preprocessed_image_a16.bin`(24B 헤더 + int16)을 넣고, L0 입력을 복사 없이 해당 주소로 사용.
+- **Conv 가속기**: vsrc RTL(pe_mac, pe_cluster, conv_acc_buffer, conv_acc_compute, conv_acc_requant). 3×3/1×1 Conv 지원, 제약(c_in 짝수, 라인 버퍼 3072, 가중치 슬롯 2048 등) 미충족 시 SW 폴백.
 
-## 문서
+## Conv 가속기 RTL (vsrc)
 
-- **W8A16 구현 전체 정리**: [docs/W8A16_IMPLEMENTATION.md](docs/W8A16_IMPLEMENTATION.md) — 데이터 형식, Conv/Requant/Bias, **가중치 4-way pack(repack)·정렬**, SiLU LUT, 블록 API(로더+이름), main 흐름, 빌드.
-- W8A32: [docs/W8A32_IMPLEMENTATION.md](docs/W8A32_IMPLEMENTATION.md)
-- Conv2D 최적화: [docs/CONV2D_OPTIMIZATION.md](docs/CONV2D_OPTIMIZATION.md)
-- 테스트: [docs/TESTING.md](docs/TESTING.md)
+- **conv_acc_top.v**: AXI/GPIO 인터페이스, 탑 모듈.
+- **conv_acc_buffer.v**: 라인 버퍼(MAX_W=3072).
+- **conv_acc_compute.v**: PE 클러스터 오케스트레이션(8 clusters × 32 PE).
+- **conv_acc_requant.v**: 누산 → requant → int16 출력.
+- 시뮬레이션: `iverilog` 또는 Vivado. `vsrc/run_tb_conv_acc.bat` (Windows).
 
 ## 라이선스 / 참고
 

@@ -9,7 +9,6 @@ typedef struct {
     int32_t cls_id;     // class ID
 } detection_t;
 
-// GCC/Clang 계열에서만 packed 적용 (Vitis/GCC 타겟)
 #if defined(__GNUC__)
 #define YOLO_PACKED __attribute__((packed))
 #else
@@ -23,17 +22,6 @@ typedef struct YOLO_PACKED {
     uint8_t  reserved[2];  // 8바이트 정렬용
 } hw_detection_t;
 
-/**
- * Classic YOLOv5n Anchor-based Decode
- *
- * 입력: (1, 255, H, W) x 3 scale. 255 = 3 * 85 (x,y,w,h,obj, cls0..79).
- * Layout: [anchor0_85, anchor1_85, anchor2_85] (channel-major).
- *
- * conf = obj_conf * max_cls_conf.
- * xy = (sigmoid(xy)*2 + grid) * stride, grid = (x,y) - 0.5.
- * wh = (sigmoid(wh)*2)^2 * anchor (pixel).
- */
-
 int32_t decode_nchw_f32(
     const float* p3, int32_t p3_h, int32_t p3_w,
     const float* p4, int32_t p4_h, int32_t p4_w,
@@ -42,7 +30,7 @@ int32_t decode_nchw_f32(
     float conf_threshold,
     int32_t input_size,
     const float strides[3],
-    const float anchors[3][6],  /* P3/P4/P5 each [aw0,ah0, aw1,ah1, aw2,ah2] */
+    const float anchors[3][6],
     detection_t* detections,
     int32_t max_detections);
 

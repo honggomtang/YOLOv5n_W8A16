@@ -11,7 +11,6 @@ static inline int16_t clamp_s16(int32_t v) {
     return (int16_t)v;
 }
 
-/* Output = SiLU(Conv3x3(SiLU(Conv1x1(X)))) + X (shortcut 시). 잔차는 int32_t 덧셈 후 clamp_s16. */
 void bottleneck_nchw_w8a16(
     const int16_t* x, int32_t n, int32_t c, int32_t h, int32_t w,
     const int8_t* cv1_w, int32_t cv1_c_out, const int32_t* cv1_bias, uint32_t cv1_mult,
@@ -26,13 +25,11 @@ void bottleneck_nchw_w8a16(
     if (!cv1_out || !cv2_out)
         return;
 
-    /* Conv1x1 -> SiLU */
     conv2d_nchw_w8a16(x, n, c, h, w, cv1_w, cv1_c_out, 1, 1,
                       cv1_bias, cv1_mult, 1, 1, 0, 0, 1,
                       cv1_out, h, w);
     silu_nchw_w8a16(cv1_out, n, cv1_c_out, h, w, cv1_out);
 
-    /* Conv3x3 -> SiLU */
     conv2d_nchw_w8a16(cv1_out, n, cv1_c_out, h, w, cv2_w, cv2_c_out, 3, 3,
                       cv2_bias, cv2_mult, 1, 1, 1, 1, 1,
                       cv2_out, h, w);
@@ -50,7 +47,6 @@ void bottleneck_nchw_w8a16(
             y[i] = cv2_out[i];
     }
 
-    /* scratch 사용 시 free 없음; 추론 시작 시 feature_pool_scratch_reset() 호출 전제 */
 }
 
 void bottleneck_nchw_f32_w8a16(

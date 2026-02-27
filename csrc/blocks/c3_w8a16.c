@@ -6,6 +6,9 @@
 #include "../utils/feature_pool.h"
 #include "../utils/timing.h"
 #include "../utils/weights_loader.h"
+#if defined(USE_CONV_ACC) && defined(BARE_METAL)
+#include "../drivers/conv_acc_driver.h"
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -25,7 +28,7 @@ static void weight_name_to_bias_name(const char* weight_name, char* bias_buf, si
     if (len >= 7 && len + 1 <= buf_size && strcmp(weight_name + len - 7, ".weight") == 0) {
         size_t prefix_len = len - 7;
         memcpy(bias_buf, weight_name, prefix_len);
-        memcpy(bias_buf + prefix_len, ".bias", 6); /* ".bias" + NUL */
+        memcpy(bias_buf + prefix_len, ".bias", 6);
     } else {
         bias_buf[0] = '\0';
     }
@@ -38,15 +41,29 @@ static void bias_convert(const float* b, float scale, int c_out, int32_t* out) {
         out[k] = (int32_t)roundf(b[k] * factor);
 }
 
-static void conv1x1_int16_w8a16(
+static int conv1x1_int16_w8a16(
     const int16_t* x, int32_t n, int32_t c_in, int32_t h, int32_t w,
     const int8_t* w_ptr, int32_t c_out, const int32_t* bias, uint32_t multiplier,
     int16_t* y)
 {
+#if defined(USE_CONV_ACC) && defined(BARE_METAL)
+    int32_t padded_h = h;
+    int32_t padded_w = w;
+    uint32_t need = conv_acc_scratch_size(c_in, 1, 1, padded_h, padded_w, h, w);
+    void* scratch = feature_pool_scratch_alloc((size_t)need);
+    if (scratch && need > 0) {
+        int acc_used = conv_layer_run(x, n, c_in, h, w, w_ptr, c_out, 1, 1,
+            bias, multiplier, 1, 1, 0, 0,
+            y, h, w, scratch, need);
+        silu_nchw_w8a16(y, n, c_out, h, w, y);
+        return acc_used;
+    }
+#endif
     conv2d_nchw_w8a16(x, n, c_in, h, w, w_ptr, c_out, 1, 1,
                       bias, multiplier, 1, 1, 0, 0, 1,
                       y, h, w);
     silu_nchw_w8a16(y, n, c_out, h, w, y);
+    return 0;
 }
 
 void c3_nchw_w8a16(
@@ -106,13 +123,13 @@ void c3_nchw_w8a16(
     }
 
     yolo_timing_begin("cv1");
-    conv1x1_int16_w8a16(x, n, c_in, h, w, (const int8_t*)w1, cv1_c_out, cv1_bias_buf, cv1_mult, cv1_out);
-    yolo_timing_end();
+    int acc1 = conv1x1_int16_w8a16(x, n, c_in, h, w, (const int8_t*)w1, cv1_c_out, cv1_bias_buf, cv1_mult, cv1_out);
+    yolo_timing_end_with_op(acc1 ? "cv1_acc" : "cv1");
     yolo_timing_begin("cv2");
-    conv1x1_int16_w8a16(x, n, c_in, h, w, (const int8_t*)w2, cv2_c_out, cv2_bias_buf, cv2_mult, cv2_out);
-    yolo_timing_end();
+    int acc2 = conv1x1_int16_w8a16(x, n, c_in, h, w, (const int8_t*)w2, cv2_c_out, cv2_bias_buf, cv2_mult, cv2_out);
+    yolo_timing_end_with_op(acc2 ? "cv2_acc" : "cv2");
     yolo_timing_begin("bottleneck");
-    static int32_t bn_cv1_buf[3][128], bn_cv2_buf[3][128]; /* cv1_c_out 최대 128 (L8 등) */
+    static int32_t bn_cv1_buf[3][128], bn_cv2_buf[3][128];
     const int16_t* bn_in = cv1_out;
     int16_t* bn_out = bn_a;
     for (int32_t i = 0; i < n_bottleneck; i++) {
@@ -143,8 +160,8 @@ void c3_nchw_w8a16(
     concat_nchw_w8a16(bn_out, cv1_c_out, cv2_out, cv2_c_out, n, h, w, concat_out);
     yolo_timing_end();
     yolo_timing_begin("cv3");
-    conv1x1_int16_w8a16(concat_out, n, cv1_c_out + cv2_c_out, h, w, (const int8_t*)w3, cv3_c_out, cv3_bias_buf, cv3_mult, y);
-    yolo_timing_end();
+    int acc3 = conv1x1_int16_w8a16(concat_out, n, cv1_c_out + cv2_c_out, h, w, (const int8_t*)w3, cv3_c_out, cv3_bias_buf, cv3_mult, y);
+    yolo_timing_end_with_op(acc3 ? "cv3_acc" : "cv3");
 }
 
 static void conv1x1_w8a16(

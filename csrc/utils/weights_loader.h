@@ -21,7 +21,6 @@ typedef struct {
     unsigned char data_owned; // 1 = loader가 할당(해제 시 free), 0 = 외부(DDR) 참조
 } tensor_info_t;
 
-// 가중치 로더 구조체 (W8A32: conv 가중치는 W_CONV로 접근)
 typedef struct {
     tensor_info_t* tensors;
     int32_t num_tensors;
@@ -31,21 +30,16 @@ int weights_init_from_memory(uintptr_t base_addr, size_t size, weights_loader_t*
 
 int weights_load_from_file(const char* bin_path, weights_loader_t* loader);
 
-/* W8A32: weights_w8.bin 로드 (scale은 w8 내부 텐서 헤더에 포함). */
 int weights_load_from_file_w8(const char* w8_path, weights_loader_t* loader);
 
 #ifdef BARE_METAL
 int weights_init_from_memory_w8(uintptr_t w8_base, size_t w8_size, weights_loader_t* loader);
 #endif
 
-// 특정 이름의 텐서 찾기
-// 반환값: 텐서 포인터, 없으면 NULL
 const tensor_info_t* weights_find_tensor(const weights_loader_t* loader, const char* name);
 
-/* FP32 텐서용. INT8 conv 가중치는 weights_get_tensor_for_conv 사용. */
 const float* weights_get_tensor_data(weights_loader_t* loader, const char* name);
 
-/* W8A32 즉시 복원용: (ptr, scale, is_int8) 반환. conv_block/c3/detect에서 사용. */
 void* weights_get_tensor_for_conv(weights_loader_t* loader, const char* name, float* out_scale, int* out_is_int8);
 
 void weights_free(weights_loader_t* loader);

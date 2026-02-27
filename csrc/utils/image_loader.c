@@ -16,7 +16,6 @@ static int parse_image_data(const uint8_t* ptr, size_t data_len, preprocessed_im
     const uint8_t* end = ptr + data_len;
 
     if (curr + 24 > end) return -1;
-    // 헤더 24B
     uint32_t original_w, original_h, size;
     float scale;
     uint32_t pad_x, pad_y;
@@ -57,11 +56,9 @@ int image_init_from_memory(uintptr_t base_addr, size_t size, preprocessed_image_
     return parse_image_data((const uint8_t*)base_addr, size, img, 1);
 }
 
-/* W8A16: 24B 헤더만 파싱, 메타데이터만 채움. payload는 건드리지 않음 (zero-copy로 base+24를 int16*로 사용). */
 int image_init_from_memory_a16(uintptr_t base_addr, size_t size, preprocessed_image_t* img) {
     const uint8_t* ptr = (const uint8_t*)base_addr;
     if (!img || size < 24u) return -1;
-    /* 최소 크기: 24 + 3*640*640*2 */
     if (size < 24u + 3u * 640u * 640u * 2u) return -1;
     uint32_t original_w, original_h, sz;
     float scale;
@@ -116,7 +113,6 @@ int image_load_from_bin(const char* bin_path, preprocessed_image_t* img) {
     return ret;
 }
 
-/* W8A16: preprocessed_image_a16.bin (24B 헤더 + int16 데이터) 로드. *out_buffer에 전체 버퍼 반환(호출자 free). int16 데이터 = (int16_t*)((char*)*out_buffer + 24). */
 int image_load_from_bin_a16(const char* bin_path, preprocessed_image_t* img, void** out_buffer) {
     FILE* f = fopen(bin_path, "rb");
     if (!f) {
@@ -142,7 +138,6 @@ int image_load_from_bin_a16(const char* bin_path, preprocessed_image_t* img, voi
         return -1;
     }
     fclose(f);
-    /* 헤더만 파싱 (parse_image_data는 float 크기 기대하므로 수동 파싱) */
     const uint8_t* curr = buffer;
     uint32_t original_w, original_h, sz;
     float scale;

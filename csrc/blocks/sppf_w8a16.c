@@ -6,6 +6,9 @@
 #include "../utils/feature_pool.h"
 #include "../utils/timing.h"
 #include "../utils/weights_loader.h"
+#if defined(USE_CONV_ACC) && defined(BARE_METAL)
+#include "../drivers/conv_acc_driver.h"
+#endif
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
@@ -34,6 +37,31 @@ static void bias_convert(const float* b, float scale, int c_out, int32_t* out) {
         out[k] = (int32_t)roundf(b[k] * factor);
 }
 
+static int conv1x1_silu_w8a16(
+    const int16_t* x, int32_t n, int32_t c_in, int32_t h, int32_t w,
+    const int8_t* w_ptr, int32_t c_out, const int32_t* bias, uint32_t multiplier,
+    int16_t* y)
+{
+#if defined(USE_CONV_ACC) && defined(BARE_METAL)
+    int32_t padded_h = h;
+    int32_t padded_w = w;
+    uint32_t need = conv_acc_scratch_size(c_in, 1, 1, padded_h, padded_w, h, w);
+    void* scratch = feature_pool_scratch_alloc((size_t)need);
+    if (scratch && need > 0) {
+        int acc_used = conv_layer_run(x, n, c_in, h, w, w_ptr, c_out, 1, 1,
+            bias, multiplier, 1, 1, 0, 0,
+            y, h, w, scratch, need);
+        silu_nchw_w8a16(y, n, c_out, h, w, y);
+        return acc_used;
+    }
+#endif
+    conv2d_nchw_w8a16(x, n, c_in, h, w, w_ptr, c_out, 1, 1,
+                      bias, multiplier, 1, 1, 0, 0, 1,
+                      y, h, w);
+    silu_nchw_w8a16(y, n, c_out, h, w, y);
+    return 0;
+}
+
 static void sppf_nchw_w8a16_core(
     const int16_t* x, int32_t n, int32_t c_in, int32_t h, int32_t w,
     const int8_t* cv1_w, int32_t cv1_c_out, const int32_t* cv1_bias, uint32_t cv1_mult,
@@ -55,11 +83,8 @@ static void sppf_nchw_w8a16_core(
         return;
 
     yolo_timing_begin("cv1");
-    conv2d_nchw_w8a16(x, n, c_in, h, w, cv1_w, cv1_c_out, 1, 1,
-                      cv1_bias, cv1_mult, 1, 1, 0, 0, 1,
-                      x1, h, w);
-    silu_nchw_w8a16(x1, n, cv1_c_out, h, w, x1);
-    yolo_timing_end();
+    int acc1 = conv1x1_silu_w8a16(x, n, c_in, h, w, cv1_w, cv1_c_out, cv1_bias, cv1_mult, x1);
+    yolo_timing_end_with_op(acc1 ? "cv1_acc" : "cv1");
 
     yolo_timing_begin("maxpool");
     maxpool2d_nchw_w8a16(x1, n, cv1_c_out, h, w, pool_k, 1, pad, y1, h, w);
@@ -73,11 +98,8 @@ static void sppf_nchw_w8a16_core(
     yolo_timing_end();
 
     yolo_timing_begin("cv2");
-    conv2d_nchw_w8a16(cat, n, 4 * cv1_c_out, h, w, cv2_w, cv2_c_out, 1, 1,
-                      cv2_bias, cv2_mult, 1, 1, 0, 0, 1,
-                      y, h, w);
-    silu_nchw_w8a16(y, n, cv2_c_out, h, w, y);
-    yolo_timing_end();
+    int acc2 = conv1x1_silu_w8a16(cat, n, 4 * cv1_c_out, h, w, cv2_w, cv2_c_out, cv2_bias, cv2_mult, y);
+    yolo_timing_end_with_op(acc2 ? "cv2_acc" : "cv2");
 }
 
 void sppf_nchw_w8a16(

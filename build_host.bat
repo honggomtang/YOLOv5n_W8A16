@@ -22,6 +22,13 @@ if /i "%1"=="w8a16" (
     %CSRC%\blocks\conv_w8a16.c %CSRC%\blocks\c3_w8a16.c %CSRC%\blocks\decode.c %CSRC%\blocks\detect_w8a16.c %CSRC%\blocks\nms.c %CSRC%\blocks\sppf_w8a16.c ^
     %CSRC%\operations\bottleneck_w8a16.c %CSRC%\operations\concat_w8a16.c %CSRC%\operations\conv2d_w8a16.c %CSRC%\operations\maxpool2d_w8a16.c %CSRC%\operations\silu_w8a16.c %CSRC%\operations\upsample_w8a16.c ^
     %CSRC%\utils\feature_pool.c %CSRC%\utils\image_loader.c %CSRC%\utils\weights_loader.c %CSRC%\utils\timing.c %CSRC%\utils\uart_dump.c
+) else if /i "%1"=="w8a16_acc" (
+  echo Building main.exe [W8A16 + Conv ACC] ...
+  gcc -DUSE_W8A16 -DUSE_WEIGHTS_W8 -DUSE_CONV_ACC %INC% -std=c99 -O2 -lm -o main.exe %CSRC%\main.c ^
+    %CSRC%\blocks\conv_w8a16.c %CSRC%\blocks\c3_w8a16.c %CSRC%\blocks\decode.c %CSRC%\blocks\detect_w8a16.c %CSRC%\blocks\nms.c %CSRC%\blocks\sppf_w8a16.c ^
+    %CSRC%\operations\bottleneck_w8a16.c %CSRC%\operations\concat_w8a16.c %CSRC%\operations\conv2d_w8a16.c %CSRC%\operations\maxpool2d_w8a16.c %CSRC%\operations\silu_w8a16.c %CSRC%\operations\upsample_w8a16.c ^
+    %CSRC%\drivers\conv_acc_driver.c ^
+    %CSRC%\utils\feature_pool.c %CSRC%\utils\image_loader.c %CSRC%\utils\weights_loader.c %CSRC%\utils\timing.c %CSRC%\utils\uart_dump.c
 ) else if /i "%1"=="w8" (
   set "CFLAGS=%CFLAGS% -DUSE_WEIGHTS_W8"
   echo Building main.exe [W8A32] ...

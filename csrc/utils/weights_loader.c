@@ -13,7 +13,6 @@ static inline void safe_read(void* dest, const uint8_t** src, size_t size) {
     *src += size;
 }
 
-// RISC-V 등: 비정렬 주소에서 4바이트 읽기 (바이트 단위로만 접근 → trap 방지)
 static inline uint32_t read_u32_unaligned(const uint8_t** src) {
     const uint8_t* p = *src;
     uint32_t v = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -90,7 +89,6 @@ static int parse_weights_data(const uint8_t* ptr, size_t data_len, weights_loade
     return 0;
 }
 
-/* [OC, IC, KH, KW] → [OC_padded/4, IC, KH, KW] with 4 int8 per uint32_t. OC_padded = (OC+3)&~3; tail padded with 0. */
 static void repack_conv2d_oc4(uint8_t* dst, const int8_t* src,
     int32_t oc, int32_t ic, int32_t kh, int32_t kw) {
     const int32_t oc_padded = (oc + 3) & ~3;
@@ -115,16 +113,14 @@ static void repack_conv2d_oc4(uint8_t* dst, const int8_t* src,
     }
 }
 
-/* 4바이트 정렬 버퍼 할당 (conv2d packed 가중치: MicroBlaze 등에서 비정렬 접근 시 하드웨어 에러 방지). */
 static void* alloc_aligned_4(size_t size) {
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
     return aligned_alloc(4, size);
 #else
-    return malloc(size);  /* 호스트 malloc은 보통 8바이트 정렬. BARE_METAL에서는 4바이트 정렬 할당자 사용 권장. */
+    return malloc(size);
 #endif
 }
 
-/* W8A32: weights_w8.bin 파싱 (INT8 텐서 헤더에 scale 포함, dequant_pool 없음). */
 static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
                             weights_loader_t* loader, int zero_copy) {
     const uint8_t* curr = w8_ptr;
@@ -133,7 +129,6 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
     if (curr + 4 > end) return -1;
     uint32_t num_tensors;
     safe_read(&num_tensors, &curr, 4);
-    /* YOLOv5n weights_w8.bin: num_tensors ~121. 0이면 DDR 미로드, 비정상 크기는 파싱 오류 */
     if (num_tensors == 0 || num_tensors > 512) return -1;
 
     loader->num_tensors = (int32_t)num_tensors;
@@ -192,7 +187,7 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
             }
         } else if (t->dtype == WEIGHTS_DTYPE_INT8) {
             if (curr + 4 > end) return -1;
-            safe_read(&t->scale, &curr, 4);  /* scale in w8 (D: 4B 정렬 유지) */
+            safe_read(&t->scale, &curr, 4);
             {
                 uintptr_t u = (uintptr_t)curr;
                 u = (u + 3u) & ~(uintptr_t)3u;
@@ -213,7 +208,6 @@ static int parse_weights_w8(const uint8_t* w8_ptr, size_t w8_len,
                 t->data_owned = 1;
                 src_int8 = t->data_int8;
             }
-            /* 4-way pack: 모든 Conv 가중치 [OC,IC,KH,KW] → [OC_padded/4,IC,KH,KW]. OC 미만은 0 패딩. 4바이트 정렬 할당. */
             if (t->ndim == 4) {
                 int32_t oc = t->shape[0], ic = t->shape[1], kh = t->shape[2], kw = t->shape[3];
                 int32_t oc_padded = (oc + 3) & ~3;
@@ -326,7 +320,6 @@ const tensor_info_t* weights_find_tensor(const weights_loader_t* loader, const c
     return NULL;
 }
 
-/* FP32 텐서만 반환. INT8 conv 가중치는 W_CONV(weights_get_tensor_for_conv) 사용. */
 const float* weights_get_tensor_data(weights_loader_t* loader, const char* name) {
     const tensor_info_t* t = weights_find_tensor(loader, name);
     if (!t) {
@@ -335,7 +328,6 @@ const float* weights_get_tensor_data(weights_loader_t* loader, const char* name)
 #endif
         return NULL;
     }
-    /* INT8 텐서: dequant_pool 제거됨. bias/BN은 FP32만 W() 사용. */
     if (t->dtype == WEIGHTS_DTYPE_INT8)
         return NULL;
     return t->data;

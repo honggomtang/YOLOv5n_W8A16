@@ -1,5 +1,8 @@
 #include "conv2d_w8a16.h"
 #include <stdint.h>
+#if defined(USE_CONV_ACC)
+#include "../drivers/conv_acc_driver.h"
+#endif
 
 #ifndef CONV2D_TILE_H
 #define CONV2D_TILE_H 8
@@ -17,6 +20,53 @@ static inline int16_t clamp_s16(int32_t v) {
     if (v > 32767) return 32767;
     if (v < -32768) return -32768;
     return (int16_t)v;
+}
+
+#if defined(USE_CONV_ACC) && defined(BARE_METAL)
+#define CONV_ACC_MAX_WEIGHT_SLOTS 2048U
+
+static int try_conv_acc(
+    const int16_t* x, int32_t n, int32_t c_in, int32_t h_in, int32_t w_in,
+    const int8_t* w, int32_t c_out, int32_t k_h, int32_t k_w,
+    const int32_t* bias_or_null, uint32_t multiplier,
+    int32_t stride_h, int32_t stride_w, int32_t pad_h, int32_t pad_w,
+    int16_t* y, int32_t h_out, int32_t w_out,
+    void* acc_scratch, uint32_t acc_scratch_size)
+{
+    if (!acc_scratch || acc_scratch_size == 0 || (c_in & 1) != 0 ||
+        stride_h > 2 || stride_w > 2) return -1;
+    if ((uint32_t)c_in * (uint32_t)k_h * (uint32_t)k_w > CONV_ACC_MAX_WEIGHT_SLOTS) return -1;
+    int32_t padded_w = w_in + 2 * pad_w;
+    int32_t padded_h = h_in + 2 * pad_h;
+    if (padded_w < k_w) return -1;
+    return conv_acc_layer_run(x, n, c_in, h_in, w_in, w,
+        bias_or_null, multiplier, c_out, k_h, k_w,
+        stride_h, stride_w, pad_h, pad_w, y, h_out, w_out,
+        acc_scratch, acc_scratch_size);
+}
+#endif
+
+int conv_layer_run(
+    const int16_t* x, int32_t n, int32_t c_in, int32_t h_in, int32_t w_in,
+    const int8_t* w, int32_t c_out, int32_t k_h, int32_t k_w,
+    const int32_t* bias_or_null,
+    uint32_t multiplier,
+    int32_t stride_h, int32_t stride_w,
+    int32_t pad_h, int32_t pad_w,
+    int16_t* y, int32_t h_out, int32_t w_out,
+    void* acc_scratch,
+    uint32_t acc_scratch_size)
+{
+#if defined(USE_CONV_ACC) && defined(BARE_METAL)
+    if (try_conv_acc(x, n, c_in, h_in, w_in, w, c_out, k_h, k_w,
+            bias_or_null, multiplier, stride_h, stride_w, pad_h, pad_w,
+            y, h_out, w_out, acc_scratch, acc_scratch_size) == 0)
+        return 1;
+#endif
+    conv2d_nchw_w8a16(x, n, c_in, h_in, w_in, w, c_out, k_h, k_w,
+        bias_or_null, multiplier, stride_h, stride_w, pad_h, pad_w, 1,
+        y, h_out, w_out);
+    return 0;
 }
 
 void conv2d_nchw_w8a16(
@@ -64,7 +114,6 @@ void conv2d_nchw_w8a16(
                                 }
                             }
                         }
-                        /* Packed layout [OC/4, IC, 1, 1]: one uint32_t = 4 consecutive OC for same IC. */
                         const uint32_t* w_p = (const uint32_t*)(const void*)w;
                         const int32_t packed_ic_stride = 1;
                         const int32_t packed_oc_stride = c_in * 1 * 1;
@@ -73,7 +122,6 @@ void conv2d_nchw_w8a16(
                             for (int32_t dh = 0; dh < th; dh++) {
                                 const int32_t oh = oh0 + dh;
                                 const int16_t* x_row = x_ch + oh * x_h_stride + ow0;
-                                /* dw를 2씩 증가: uint32_t로 2개(x0,x1) 읽어 4-packed 가중치와 연산. 주소 4바이트 정렬일 때만 패어 로드. */
                                 for (int32_t dw = 0; dw < tw; dw += 2) {
                                     int32_t x0, x1;
                                     const int use_pair = (dw + 1 < tw);
@@ -167,7 +215,6 @@ void conv2d_nchw_w8a16(
                                         const int16_t* x_base = x + (ni * c_in + ic) * x_c_stride + ih0 * x_h_stride + iw0;
                                         for (int32_t kh = 0; kh < k_h; kh++) {
                                             const int16_t* x_row = x_base + kh * x_h_stride;
-                                            /* kw 루프: 가능하면 uint32_t로 2개 읽어 연산 (정렬/홀수 처리) */
                                             int32_t kw = 0;
                                             for (; kw + 1 < k_w; kw += 2) {
                                                 uintptr_t addr = (uintptr_t)(const void*)x_row;
@@ -261,7 +308,6 @@ void conv2d_nchw_w8a16(
     }
 }
 
-/* FP32 경로 */
 static float conv2d_acc_buf_w8a16[CONV2D_TILE_H][CONV2D_TILE_W][CONV2D_OC_BLOCK];
 
 void conv2d_nchw_f32_w8a16(
@@ -397,7 +443,6 @@ void conv2d_nchw_f32_w8a16(
     }
 }
 
-/* FP32 input path */
 void conv2d_nchw_f32_w8_w8a16(
     const float* x, int32_t n, int32_t c_in, int32_t h_in, int32_t w_in,
     const int8_t* w, float scale, int32_t c_out, int32_t k_h, int32_t k_w,

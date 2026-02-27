@@ -10,7 +10,6 @@ void bottleneck_nchw_f32_w8a16(
     int32_t shortcut,
     float* y);
 
-/* W8A16 전용: 입출력 int16_t (Q6.10). multiplier = Scale_W*65536. */
 void bottleneck_nchw_w8a16(
     const int16_t* x, int32_t n, int32_t c, int32_t h, int32_t w,
     const int8_t* cv1_w, int32_t cv1_c_out, const int32_t* cv1_bias, uint32_t cv1_mult,

@@ -1,7 +1,7 @@
 #include "silu_w8a16.h"
 #include "silu_lut_data.h"
 #include <stdint.h>
-#include <math.h>  /* silu_nchw_f32_w8a16 경로에서만 사용 (expf) */
+#include <math.h>
 
 
 void silu_nchw_w8a16(
@@ -10,7 +10,7 @@ void silu_nchw_w8a16(
 {
     int32_t total = n * c * h * w;
     for (int32_t i = 0; i < total; i++) {
-        uint16_t idx = (uint16_t)x[i];  /* 음수: -1→65535, -32768→32768 (비트 패턴 유지) */
+        uint16_t idx = (uint16_t)x[i];
         y[i] = silu_lut_q610[idx];
     }
 }

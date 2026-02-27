@@ -1,4 +1,5 @@
 .cursor/
+docs/
 !tests/test_*.c    # 소스 파일은 제외
 # Python 관련
 # Vivado/Vitis 관련 임시 파일
@@ -31,6 +32,7 @@ __pycache__/
 __pycache__/       # 파이썬 캐시
 assets/weights*.h  # 헤더로 뽑은 가중치(엄청 큼)
 #assets/weights_w8.bin
+assets/weights_acc_repack.bin
 obj/               # 컴파일된 오브젝트 파일
 tests/test_*       # 로컬 테스트 실행파일 (컴파일된 바이너리)
 

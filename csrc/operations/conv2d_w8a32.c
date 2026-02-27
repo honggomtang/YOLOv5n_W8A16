@@ -1,10 +1,6 @@
 #include "conv2d_w8a32.h"
 #include <stdint.h>
 
-/* conv2d 최적화 포인트:
- * - 출력 타일링 (기본 8x8)
- * - safe 영역/경계 분리 (경계만 bounds 체크)
- * - 정적 acc 버퍼(BSS) 사용 (bare-metal 스택 절약) */
 #ifndef CONV2D_TILE_H
 #define CONV2D_TILE_H 8
 #endif
@@ -150,7 +146,6 @@ void conv2d_nchw_f32_w8a32(
     }
 }
 
-/* W8A32: INT8 weights (per-tensor scale), FP32 compute */
 void conv2d_nchw_f32_w8_w8a32(
     const float* x, int32_t n, int32_t c_in, int32_t h_in, int32_t w_in,
     const int8_t* w, float scale, int32_t c_out, int32_t k_h, int32_t k_w,
