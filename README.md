@@ -1,6 +1,6 @@
 # YOLOv5n Pure C Implementation (W8A32 / W8A16)
 
-순수 C로 구현한 YOLOv5n(nano) 객체 탐지 추론 엔진. 외부 라이브러리 없이 동작하며, 호스트 빌드와 **Bare-metal(FPGA)** 빌드를 하나의 코드베이스로 지원한다. **W8A16 경로**는 Conv 하드웨어 가속기(RTL) 및 드라이버와 연동 가능하다.
+순수 C로 구현한 YOLOv5n(nano) 객체 탐지 추론 엔진. 외부 라이브러리 없이 동작하며, 호스트 빌드와 **Bare-metal(FPGA)** 빌드를 하나의 코드베이스로 지원. **W8A16 경로**는 Conv 하드웨어 가속기(RTL) 및 드라이버와 연동 가능.
 
 ## 목표
 
